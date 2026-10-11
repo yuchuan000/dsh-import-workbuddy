@@ -1,0 +1,48 @@
+{
+  "name": "dsh-import-workbuddy",
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.7.0",
+  "description": "Import WorkBuddy (Tencent CodeBuddy) chat history into DeepSeek Harness (dsh) as native, resumable sessions grouped by their original workspace.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "workbuddy",
+    "codebuddy",
+    "session-import",
+    "chat-history",
+    "migration"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuchuan000/dsh-import-workbuddy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yuchuan000/dsh-import-workbuddy/issues"
+  },
+  "homepage": "https://github.com/yuchuan000/dsh-import-workbuddy#readme",
+  "type": "module",
+  "main": "import.mjs",
+  "exports": {
+    "./reader": "./lib/workbuddy-reader.mjs",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "import": "node import.mjs sessions workbuddy",
+    "import:apply": "node import.mjs sessions workbuddy --apply",
+    "attach": "node attach-workspaces.mjs",
+    "attach:apply": "node attach-workspaces.mjs --apply"
+  },
+  "files": [
+    "lib/",
+    "import.mjs",
+    "export.mjs",
+    "attach-workspaces.mjs",
+    "README.md",
+    "LICENSE"
+  ]
+}

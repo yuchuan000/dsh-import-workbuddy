@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# DSH runtime artifacts
+*.log
+.dsh/
+sessions/
+
+# Test / scratch output
+coverage/
+tmp/
+*.local.mjs
+
+# Editor & OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Never commit imported session data or credentials
+*.credentials.yaml
+.env
+.env.*
