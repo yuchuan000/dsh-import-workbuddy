@@ -32,13 +32,16 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "import": "node import.mjs sessions workbuddy",
-    "import:apply": "node import.mjs sessions workbuddy --apply",
+    "import": "node import.mjs",
+    "import:list": "node import.mjs --list",
+    "import:apply": "node import.mjs --apply",
     "attach": "node attach-workspaces.mjs",
-    "attach:apply": "node attach-workspaces.mjs --apply"
+    "attach:apply": "node attach-workspaces.mjs --apply",
+    "test": "node test/run.mjs"
   },
   "files": [
     "lib/",
+    "test/",
     "import.mjs",
     "export.mjs",
     "attach-workspaces.mjs",

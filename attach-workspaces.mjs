@@ -17,6 +17,8 @@
  *
  * 用法（在 DSH 应用目录下运行，见 run-attach-workspaces.mjs）：
  *   node attach-workspaces.mjs [--apply] [--create-missing-dirs] [--prefix wb-]
+ *   node attach-workspaces.mjs --apply --only=wb-abc,wb-def
+ *   node attach-workspaces.mjs --apply --exclude=wb-abc
  */
 
 import { Context } from '@deepseek-ai/cordis'
@@ -35,6 +37,13 @@ const apply = args.includes('--apply')
 const createMissingDirs = args.includes('--create-missing-dirs')
 const prefixArg = args.find(a => a.startsWith('--prefix='))
 const prefix = prefixArg !== undefined ? prefixArg.slice('--prefix='.length) : 'wb-'
+// 会话选择：`--only=a,b` 只处理这些；`--exclude=a,b` 排除这些。
+// 值支持带不带 `wb-` 前缀。
+const onlyArg = args.find(a => a.startsWith('--only='))
+const excludeArg = args.find(a => a.startsWith('--exclude='))
+const splitIds = (v) => v.split(/[\s,，、]+/).map(s => s.trim()).filter(s => s.length > 0)
+const only = onlyArg !== undefined ? splitIds(onlyArg.slice('--only='.length)) : undefined
+const exclude = excludeArg !== undefined ? splitIds(excludeArg.slice('--exclude='.length)) : undefined
 const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
 const sessionsRoot = join(dshHome, 'sessions')
 const storagesRoot = join(dshHome, 'storages')
@@ -55,7 +64,20 @@ if (registry === undefined) throw new Error('workspaceRegistry service unavailab
 
 // Collect target sessions with their header cwd.
 const headers = (await ctx.sessionPersistence.list()).map(snapshot => snapshot.header)
-const targets = headers.filter(h => String(h.id).startsWith(prefix))
+const matchId = (id, list) => list.some(raw => raw === id || `wb-${raw}` === id || raw === String(id).replace(/^wb-/, ''))
+let targets = headers.filter(h => String(h.id).startsWith(prefix))
+if (only !== undefined) {
+  const before = targets.length
+  targets = targets.filter(h => matchId(String(h.id), only))
+  const missed = only.filter(raw => !targets.some(h => matchId(String(h.id), [raw])))
+  if (missed.length > 0) console.log(`警告: --only 里这些 id 没有匹配到会话: ${missed.join(', ')}`)
+  console.log(`--only 过滤: ${before} -> ${targets.length}`)
+}
+if (exclude !== undefined) {
+  const before = targets.length
+  targets = targets.filter(h => !matchId(String(h.id), exclude))
+  console.log(`--exclude 过滤: ${before} -> ${targets.length}`)
+}
 console.log(`模式: ${apply ? '--apply（写入注册表）' : '--dry-run（预览）'}`)
 console.log(`会话: ${targets.length} 个以 "${prefix}" 开头的会话\n`)
 
