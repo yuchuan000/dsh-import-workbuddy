@@ -65,6 +65,7 @@ window.__ModuleLoader__.load({
       // I looking at" only after you had already crossed over.
       'settings.pendingTip1': '把本机 WorkBuddy（腾讯 CodeBuddy）的会话导入 DSH，成为可继续对话的原生会话。',
       'settings.pendingTip2': '勾选要导入的内容，重复导入会自动跳过。',
+      'settings.pendingTip3': '时间列是最后一次活动（最后一条消息）的时间；最新的排在最上面，同一个项目目录的排在一起。',
       'settings.importedTip1': '已经在 DSH 里的会话。',
       'settings.importedTip2': '勾选可以把 DSH 这边新产生的对话回写进 WorkBuddy 原会话；接管过来的还可以还原回去。',
       'settings.recycleTip1': '从待导入里划掉的会话。',
@@ -173,6 +174,7 @@ window.__ModuleLoader__.load({
       'settings.tip': 'Explanation',
       'settings.pendingTip1': 'Import local WorkBuddy (Tencent CodeBuddy) conversations into DSH as native, resumable sessions.',
       'settings.pendingTip2': 'Tick what you want; re-importing skips automatically.',
+      'settings.pendingTip3': 'The time column is the last activity (last message); newest first, sessions from the same project folder kept together.',
       'settings.importedTip1': 'Conversations already in DSH.',
       'settings.importedTip2': 'Tick one to write later turns in DSH back to the WorkBuddy original; anything adopted can also be put back.',
       'settings.recycleTip1': 'Conversations you swept out of the pending list.',
@@ -1038,24 +1040,57 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Rows in group order: same group adjacent, groups by name, no-group last.
+     * When a row was last active — its last message, falling back to its
+     * creation time. `null` means the host could not say, which is not the same
+     * as "a long time ago": rows with no time sink to the bottom rather than
+     * joining the oldest batch as if 0 were a fact.
+     */
+    function rowActivity(row) {
+      const value = row?.updatedAt ?? row?.createdAt
+      return typeof value === 'number' && Number.isFinite(value) ? value : null
+    }
+
+    /**
+     * Rows in group order: same group adjacent, groups newest-first, no-group
+     * last.
      *
-     * Sorting is what makes the headings meaningful — a heading over an
-     * unsorted run would just be a label that happens to be true once. Order
-     * inside a group is left as the host sent it (newest first).
+     * Sorting is what makes the headings meaningful — a heading over an unsorted
+     * run would just be a label that happens to be true once. Two levels:
+     *
+     *   - *between* groups, by the group's latest activity, so the project you
+     *     were in yesterday sits above the one you last touched in June. That
+     *     is the point of sorting by last activity at all: alphabetical order
+     *     put the newest conversation wherever its folder name happened to fall.
+     *   - *inside* a group, the order the host sent, which is already newest
+     *     first (`byMostRecent`). The sort below is stable, so it survives.
      *
      * @returns {{ row, key, label }[]}
      */
     function groupRows(rows) {
-      return rows
-        .map(row => ({ row, key: groupKeyOf(row) }))
+      const entries = rows.map(row => ({ row, key: groupKeyOf(row) }))
+      // Each group's latest activity, which is what orders the groups.
+      const latest = new Map()
+      for (const entry of entries) {
+        const at = rowActivity(entry.row)
+        if (at === null) continue
+        const seen = latest.get(entry.key)
+        if (seen === undefined || at > seen) latest.set(entry.key, at)
+      }
+      return entries
         .sort((a, b) => {
           if (a.key === b.key) return 0
           // Sessions with no directory cannot be placed; they go last rather
           // than first, so the named groups stay at the top where they are read.
           if (a.key.length === 0) return 1
           if (b.key.length === 0) return -1
-          return a.key.localeCompare(b.key)
+          const at = latest.get(a.key)
+          const bt = latest.get(b.key)
+          // Neither group has a time to be ordered by: fall back to the name,
+          // so the order stays predictable instead of depending on arrival.
+          if (at === undefined && bt === undefined) return a.key.localeCompare(b.key)
+          if (at === undefined) return 1
+          if (bt === undefined) return -1
+          return bt - at
         })
         .map(entry => ({ ...entry, label: groupLabelOf(entry.key) }))
     }
@@ -1145,7 +1180,11 @@ window.__ModuleLoader__.load({
           id: TAB_PENDING,
           label: __('settings.tabPending'),
           count: props.pending,
-          tip: [__('settings.pendingTip1'), __('settings.pendingTip2')],
+          tip: [
+            __('settings.pendingTip1'),
+            __('settings.pendingTip2'),
+            __('settings.pendingTip3'),
+          ],
         },
         {
           id: TAB_IMPORTED,
@@ -1884,7 +1923,9 @@ window.__ModuleLoader__.load({
                         },
                       }, [
                         session.cwd ? `${session.cwd} · ` : '',
-                        formatTime(session.createdAt),
+                        // 最后一条消息的时间，不是创建时间：一个开了两周、每天
+                        // 还接着聊的会话，按创建时间会被压到列表底下。
+                        formatTime(session.updatedAt ?? session.createdAt),
                         session.messageCount !== undefined ? ` · ${session.messageCount} 条消息` : '',
                       ].join('')),
                     ]),

@@ -1034,6 +1034,48 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
+  await checkAsync('时间列显示的是最后活动时间，不是创建时间', async () => {
+    // 一个开在去年、一直聊到今年的会话：两个时间差了一年，谁被显示出来一目了然。
+    const createdAt = new Date('2025-01-05T10:00:00').getTime()
+    const updatedAt = new Date('2026-06-09T10:00:00').getTime()
+    const rows = [{
+      ...SESSION_A, id: 'wb-t1', title: '开了很久还在聊的',
+      cwd: 'D:\\proj\\tt', createdAt, updatedAt,
+    }]
+    globalThis.fetch = fakeFetch({ sessions: rows }).impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      const body = text(view.tree())
+      const shown = new Date(updatedAt).toLocaleString()
+      const stale = new Date(createdAt).toLocaleString()
+      if (!body.includes(shown)) throw new Error(`时间列应显示最后活动 ${shown}，实际: ${body.slice(0, 400)}`)
+      if (body.includes(stale)) throw new Error(`不该再显示创建时间 ${stale}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('分块之间按块内最新活动排，不再按目录名字母序', async () => {
+    // 字母序会把 aa 排在最上面；但 aa 里全是去年的旧会话，zz 里刚聊过。
+    const OLD = new Date('2025-01-05T10:00:00').getTime()
+    const NEW = new Date('2026-06-09T10:00:00').getTime()
+    const rows = [
+      { ...SESSION_A, id: 'wb-a1', title: 'aa 里的旧会话', cwd: 'D:\\proj\\aa', createdAt: OLD, updatedAt: OLD },
+      { ...SESSION_A, id: 'wb-z1', title: 'zz 里的旧会话', cwd: 'D:\\proj\\zz', createdAt: OLD, updatedAt: OLD },
+      { ...SESSION_B, id: 'wb-z2', title: 'zz 里刚聊过的', cwd: 'D:\\proj\\zz', createdAt: OLD, updatedAt: NEW },
+    ]
+    globalThis.fetch = fakeFetch({ sessions: rows }).impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      const keys = groupKeys(view)
+      // zz 整体排到 aa 上面：它里面有一条是最近的，而 aa 里最晚的也停在去年。
+      // 字母序会把 aa 排在前面，所以这条断言本身就区分了两种排序依据。
+      if (keys.join('|') !== 'D:\\proj\\zz|D:\\proj\\aa') {
+        throw new Error(`块应按块内最新活动排，实际: ${keys.join('|')}`)
+      }
+    } finally { globalThis.fetch = realFetch }
+  })
+
   await checkAsync('已导入栏里未归组的行有徽标，勾选后可以一键归组', async () => {
     const fetch = fakeFetch({ sessions: [SESSION_DONE, SESSION_UNGROUPED] })
     globalThis.fetch = fetch.impl

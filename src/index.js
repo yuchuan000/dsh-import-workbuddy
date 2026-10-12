@@ -187,6 +187,9 @@ function describeCandidates(candidates, marks = {}) {
       cwd: candidate.cwd ?? null,
       projectDir: candidate.projectDir ?? null,
       createdAt: candidate.createdAt ?? null,
+      // 最后一条消息的时间。列表按它排序也按它显示 —— 创建时间会把「开了
+      // 两周、每天还在聊」的会话压到底下，那正是最该排在前面的那一批。
+      updatedAt: candidate.updatedAt ?? null,
       messageCount: candidate.messageCount,
       alreadyImported: findExistingSession(sessionsRoot(), candidate.id) !== false,
       deletedInWorkBuddy: state !== undefined && state.deletedAt !== null,
@@ -300,6 +303,8 @@ function describeAdoptedRows(adopted, onDiskIds, marks = {}) {
       cwd: facts.cwd,
       projectDir: null,
       createdAt: entry.archivedAt ?? null,
+      // 归档之后轨迹不再变动，归档那一刻就是它最后活动的时间。
+      updatedAt: entry.archivedAt ?? null,
       messageCount: facts.messageCount,
       alreadyImported: findExistingSession(sessionsRoot(), entry.id) !== false,
       // 已在 WorkBuddy 侧软删除，但界面上「已接管」才是可操作的那条信息。
@@ -337,6 +342,8 @@ function describeHiddenRows(entries, known, marks = {}) {
       cwd: entry.cwd.length > 0 ? entry.cwd : null,
       projectDir: entry.projectDir.length > 0 ? entry.projectDir : null,
       createdAt: entry.at ?? null,
+      // 划进回收站那一刻：它已经离开列表，不会再有新的活动。
+      updatedAt: entry.at ?? null,
       messageCount: undefined,
       alreadyImported: findExistingSession(sessionsRoot(), entry.id) !== false,
       deletedInWorkBuddy: false,
@@ -347,6 +354,38 @@ function describeHiddenRows(entries, known, marks = {}) {
     })
   }
   return rows
+}
+
+/**
+ * 一行的「最后活动时间」：有 updatedAt 用它，否则用创建时间顶上，
+ * 两者都没有的返回 null（排序时一律沉到最后）。
+ *
+ * 界面按这个排序，所以它必须是唯一的一个数 —— 不能让「没有更新时间」的
+ * 行变成 0 混在最旧的一批里，那是拿一个不知道的值冒充一个知道的值。
+ *
+ * @param {object} row
+ * @returns {number|null}
+ */
+function rowActivity(row) {
+  const value = row?.updatedAt ?? row?.createdAt
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * 列表按最后活动时间倒序：最新的排在最上面。
+ *
+ * 在 host 侧排，不在 client 侧：client 还要再按项目目录分块，而分块用的是
+ * 稳定排序 —— 先在这里把全局顺序定死，client 分块之后块内块间才都是新→旧。
+ */
+function byMostRecent(rows) {
+  return [...rows].sort((a, b) => {
+    const at = rowActivity(a)
+    const bt = rowActivity(b)
+    if (at === null && bt === null) return 0
+    if (at === null) return 1
+    if (bt === null) return -1
+    return bt - at
+  })
 }
 
 /** Normalize a body id list: strings only, trimmed, de-duplicated, capped. */
@@ -407,12 +446,13 @@ function registerRoutes(host, ctx) {
         // 被划进回收站、但已经不在 projects 树里的：只能靠清单自己描述。
         const hiddenEntries = readHidden()
         sessions.push(...describeHiddenRows(hiddenEntries, new Set(sessions.map(s => s.id)), { grouped }))
+        const ordered = byMostRecent(sessions)
         sendJson(response, 200, {
           ok: true,
           workbuddyRoot: workbuddyRoot(),
           sessionsRoot: sessionsRoot(),
           archiveRoot: adoptArchiveRoot(),
-          sessions,
+          sessions: ordered,
         })
       } catch (error) {
         sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })

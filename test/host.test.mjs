@@ -57,8 +57,18 @@ async function checkAsync(label, fn) {
 
 // --- fixtures -----------------------------------------------------------------
 
-function makeSourceSession({ id, cwd, userText, assistantText, toolCall }) {
-  const t0 = 1791600000000
+/**
+ * @param {object} opts
+ * @param {number} [opts.at] 这条会话的时间基准。列表按「最后活动」排序，所以
+ *   用例必须能造出活动时间各不相同的会话 —— 默认基准下所有候选都是同一秒，
+ *   排序怎么排都看不出问题。
+ * @param {number} [opts.lastAt] 最后一条消息的时间。它和 `at` 拉开距离，才造得出
+ *   「开得很早、但一直聊到最近」这种会话 —— 正是按创建时间排序会把它压到底下、
+ *   按最后活动排序会把它顶上来的那一批。
+ */
+function makeSourceSession({ id, cwd, userText, assistantText, toolCall, at, lastAt }) {
+  const t0 = at ?? 1791600000000
+  const tN = lastAt ?? (t0 + (toolCall ? 4000 : 2000))
   const lines = [
     { type: 'session-meta', sessionId: id, timestamp: t0, cwd, meta: {} },
     {
@@ -68,7 +78,7 @@ function makeSourceSession({ id, cwd, userText, assistantText, toolCall }) {
         text: `<system-reminder>\n<user_info>\nWorkspace Folder: ${cwd}\n</user_info>\n</system-reminder>\n<user_query>${userText}</user_query>`,
       }],
     },
-    { type: 'message', id: 'm2', timestamp: t0 + 2000, cwd, role: 'assistant', content: [{ type: 'output_text', text: assistantText }] },
+    { type: 'message', id: 'm2', timestamp: toolCall ? t0 + 2000 : tN, cwd, role: 'assistant', content: [{ type: 'output_text', text: assistantText }] },
   ]
   if (toolCall) {
     lines.push({
@@ -76,7 +86,7 @@ function makeSourceSession({ id, cwd, userText, assistantText, toolCall }) {
       content: [{ type: 'function_call', name: toolCall.name, arguments: toolCall.arguments, call_id: toolCall.callId }],
     })
     lines.push({
-      type: 'message', id: 'm4', timestamp: t0 + 4000, cwd, role: 'tool',
+      type: 'message', id: 'm4', timestamp: tN, cwd, role: 'tool',
       content: [{ type: 'function_call_result', call_id: toolCall.callId, output: 'ok' }],
     })
   }
@@ -262,6 +272,70 @@ export async function run() {
     })
     check('候选标题非空', () => {
       assert.ok(typeof s1?.title === 'string' && s1.title.length > 0)
+    })
+    sb.restore()
+  }
+
+  // 1b. 最后活动时间：字段语义 + 列表排序都用它
+  {
+    const DAY = 86400000
+    const T0 = 1791600000000
+    const sb = makeSandbox()
+    sb.seed('proj-a', [
+      // 开得最早，但一直聊到第五天 —— 按创建时间它垫底，按最后活动它排第二。
+      { id: 'sess-long', cwd: 'd:/work/proj-a', userText: 'a', assistantText: 'b', at: T0, lastAt: T0 + DAY * 5 },
+      // 昨天开的，聊完就没动过。
+      { id: 'sess-mid', cwd: 'd:/work/proj-a', userText: 'c', assistantText: 'd', at: T0 + DAY * 4, lastAt: T0 + DAY * 4 + 2000 },
+    ])
+    sb.seed('proj-b', [
+      // 今天开的，最新。
+      { id: 'sess-new', cwd: 'd:/work/proj-b', userText: 'e', assistantText: 'f', at: T0 + DAY * 9, lastAt: T0 + DAY * 9 + 2000 },
+    ])
+    const { route } = makeHarness()
+    const { payload } = await call(route(SESSIONS_PATH))
+    const byId = new Map(payload.sessions.map(s => [s.id, s]))
+
+    check('updatedAt 是最后一条消息的时间，不是创建时间', () => {
+      const long = byId.get('wb-sess-long')
+      assert.equal(long?.createdAt, T0, 'createdAt 应是会话开头')
+      assert.equal(long?.updatedAt, T0 + DAY * 5, 'updatedAt 应是最后一条消息')
+      assert.ok(long.updatedAt - long.createdAt === DAY * 5, '两者必须真的差五天，否则这个用例什么都没测到')
+    })
+
+    check('列表按最后活动时间倒序：最新的在最上面', () => {
+      const ids = payload.sessions.map(s => s.id)
+      // sess-long 开得最早但聊到第五天，所以它压在昨天开的 sess-mid 上面。
+      assert.deepEqual(ids, ['wb-sess-new', 'wb-sess-long', 'wb-sess-mid'],
+        `实际顺序：${ids.join(' > ')}`)
+    })
+
+    check('按创建时间排会把「开了很久还在聊」的压到底下 —— 这正是改掉的那种顺序', () => {
+      // 同一批行，按 createdAt 排：sess-long 从第二位掉到第三位。
+      const byCreated = [...payload.sessions].sort((a, b) => b.createdAt - a.createdAt).map(s => s.id)
+      assert.notDeepEqual(byCreated, payload.sessions.map(s => s.id),
+        '两种排序若一致，说明「改显示时间」这个诉求本身没有落到排序上')
+      assert.equal(byCreated[byCreated.length - 1], 'wb-sess-long')
+    })
+
+    check('没有时间的行沉到最后，而不是当成 0 混进最旧的一批', () => {
+      const rows = [
+        { id: 'a', updatedAt: T0 + DAY },
+        { id: 'b' },
+        { id: 'c', updatedAt: T0 + DAY * 2 },
+        { id: 'd', createdAt: T0 + DAY * 3 },
+      ]
+      // 与 host 同一套规则：没有时间的一律沉底。
+      const activity = (r) => (typeof r.updatedAt === 'number' ? r.updatedAt
+        : typeof r.createdAt === 'number' ? r.createdAt : null)
+      const sorted = [...rows].sort((x, y) => {
+        const at = activity(x); const bt = activity(y)
+        if (at === null && bt === null) return 0
+        if (at === null) return 1
+        if (bt === null) return -1
+        return bt - at
+      })
+      assert.equal(sorted[sorted.length - 1].id, 'b', '没时间的必须在最后')
+      assert.equal(sorted[0].id, 'd', '只有 createdAt 的也应参与排序')
     })
     sb.restore()
   }
