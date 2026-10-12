@@ -12,6 +12,8 @@
  *   POST /__dsh-import-workbuddy/hide      — soft-delete candidates (page's bin)
  *   POST /__dsh-import-workbuddy/unhide    — take them back out of the bin
  *   POST /__dsh-import-workbuddy/regroup   — attach imported sessions to their group
+ *   GET  /__dsh-import-workbuddy/presets   — agent presets this deployment offers
+ *   POST /__dsh-import-workbuddy/preset    — set the agent preset of imported sessions
  *
  * Why routes and not a native tool: the only caller is this plugin's own
  * settings page, which runs in the browser where @deepseek-ai/dsh-tools has no
@@ -23,14 +25,16 @@
  * the CLI (import.mjs), so the page and the terminal cannot drift apart.
  */
 
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { adoptArchiveRoot, listAdopted, restoreAdopted } from '../lib/adopt.mjs'
 import { collectCandidates, importCandidates, normalizeMode } from '../lib/import-core.mjs'
 import { deriveImportTitle } from '../lib/convert.mjs'
-import { findExistingSession } from '../lib/dsh-writer.mjs'
+import { findExistingSession, rewriteSessionHeader, normalizePresetId, DEFAULT_AGENT_PRESET, CURRENT_ARTIFACT_FILENAME } from '../lib/dsh-writer.mjs'
+import { readDshSession } from '../lib/dsh-reader.mjs'
 import { hideCandidates, hiddenIds, readHidden, unhideCandidates } from '../lib/hidden.mjs'
-import { syncBack } from '../lib/sync-back.mjs'
+import { syncBack, readWatermark } from '../lib/sync-back.mjs'
 import { dshHome } from '../lib/util.mjs'
 import { attachSessionsToWorkspaces, groupedSessionIds } from '../lib/workspace-group.mjs'
 import { readWorkbuddyState } from '../lib/workbuddy-state.mjs'
@@ -180,6 +184,7 @@ function describeCandidates(candidates, marks = {}) {
   return candidates.map((candidate) => {
     const state = states.get(candidate.id)
     const title = candidateTitle(candidate)
+    const dir = findExistingSession(sessionsRoot(), candidate.id)
     return {
       id: candidate.id,
       title,
@@ -191,7 +196,10 @@ function describeCandidates(candidates, marks = {}) {
       // 两周、每天还在聊」的会话压到底下，那正是最该排在前面的那一批。
       updatedAt: candidate.updatedAt ?? null,
       messageCount: candidate.messageCount,
-      alreadyImported: findExistingSession(sessionsRoot(), candidate.id) !== false,
+      alreadyImported: dir !== false,
+      // 已经进 DSH 的那些行才报自己挂在哪个 agent 预设下：要改就得先看见
+      // 现在是什么。待导入的行没有 DSH 产物，报 null（页面不显示）。
+      agentPreset: dir === false ? null : readImportedPreset(dir),
       deletedInWorkBuddy: state !== undefined && state.deletedAt !== null,
       adopted: adoptedIds.has(candidate.id),
       hidden: hidden.has(candidate.id),
@@ -200,6 +208,32 @@ function describeCandidates(candidates, marks = {}) {
       canSyncBack: !adoptedIds.has(candidate.id),
     }
   })
+}
+
+/**
+ * The agent preset an already-imported session currently carries.
+ *
+ * Read from the artifact header, which is the same field the import writes and
+ * `/preset` rewrites — so what the row reports and what the button changes are
+ * the same value. `null` when it cannot be read: a preset nobody can see is a
+ * guess, and a guess is worse than a blank.
+ *
+ * Only called for rows that do have an artifact, so an import-heavy page does
+ * not pay for candidates that are still on the WorkBuddy side.
+ *
+ * @param {string} dir session directory inside `$DSH_HOME/sessions`
+ * @returns {string | null}
+ */
+function readImportedPreset(dir) {
+  try {
+    const artifact = join(dir, CURRENT_ARTIFACT_FILENAME)
+    const path = existsSync(artifact) ? artifact : join(dir, 'session.jsonl.zstd')
+    if (!existsSync(path)) return null
+    const header = readDshSession(path).header ?? {}
+    return normalizePresetId(header.agentPreset ?? DEFAULT_AGENT_PRESET)
+  } catch {
+    return null
+  }
 }
 
 /** The title a candidate would carry once imported (falls back to its id). */
@@ -296,6 +330,7 @@ function describeAdoptedRows(adopted, onDiskIds, marks = {}) {
   for (const entry of adopted) {
     if (!entry.present || onDiskIds.has(entry.id)) continue
     const facts = archiveFacts(entry)
+    const dir = findExistingSession(sessionsRoot(), entry.id)
     rows.push({
       id: entry.id,
       title: facts.title,
@@ -306,7 +341,8 @@ function describeAdoptedRows(adopted, onDiskIds, marks = {}) {
       // 归档之后轨迹不再变动，归档那一刻就是它最后活动的时间。
       updatedAt: entry.archivedAt ?? null,
       messageCount: facts.messageCount,
-      alreadyImported: findExistingSession(sessionsRoot(), entry.id) !== false,
+      alreadyImported: dir !== false,
+      agentPreset: dir === false ? null : readImportedPreset(dir),
       // 已在 WorkBuddy 侧软删除，但界面上「已接管」才是可操作的那条信息。
       deletedInWorkBuddy: false,
       adopted: true,
@@ -410,6 +446,10 @@ function normalizeOptions(value) {
   // 模式走 normalizeMode：未知值回落 copy，绝不因为一个拼错的枚举走成接管。
   if (value.mode !== undefined) options.mode = normalizeMode(value.mode)
   if (typeof value.titlePrefix === 'string' && value.titlePrefix.length > 0) options.titlePrefix = value.titlePrefix
+  // agent 预设：形状校验（限长/限字符集）在 normalizePresetId 里做，
+  // 非法值会被它归一成 'standard' —— 也就是历史行为，绝不写进无效 id。
+  // 存在性校验留给调用方，因为那需要 agent-preset registry。
+  if (value.agentPreset !== undefined) options.agentPreset = normalizePresetId(value.agentPreset)
   for (const key of ['truncate', 'toolTruncate']) {
     const raw = value[key]
     if (raw === undefined || raw === null) continue
@@ -420,9 +460,229 @@ function normalizeOptions(value) {
   return options
 }
 
+// --- agent presets -----------------------------------------------------------
+//
+// Why the page needs this at all: a session's agent preset is decided when the
+// session is created/resumed, from the `agentPreset` field of the session
+// header. The import writes that header, so the import is the only chance to
+// pick the preset — and afterwards the only way to change it is to rewrite that
+// one header line. Both directions need the deployment's preset roster, which
+// lives in the `agentPresets` service (dsh-agent-preset-registry).
+
+/** The preset registry, or undefined on a deployment that has no such service. */
+function presetRegistry(ctx) {
+  try {
+    return ctx.get('agentPresets')
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The presets this deployment offers, as the page should list them.
+ *
+ * Returns `undefined` when the service is absent so callers can distinguish
+ * "no registry" (fall back to a free-form id) from "registry says none".
+ *
+ * @returns {Promise<Array<{id: string, name?: string, description?: string, isDefault?: boolean, broken?: string}> | undefined>}
+ */
+async function listPresets(ctx) {
+  const registry = presetRegistry(ctx)
+  if (registry === undefined || typeof registry.list !== 'function') return undefined
+  const rows = await registry.list()
+  if (!Array.isArray(rows)) return undefined
+  let defaultId
+  try {
+    defaultId = registry.defaultId
+  } catch { /* older host: no default notion, fine */ }
+  return rows.map(row => ({ ...row, ...(row.id === defaultId ? { isDefault: true } : {}) }))
+}
+
+/** Whether `id` names a preset this deployment actually has. */
+async function presetExists(ctx, id) {
+  const rows = await listPresets(ctx)
+  // No registry: we cannot prove it does not exist, so we allow it. The
+  // alternative — refusing every id — would break deployments that supply
+  // presets some other way.
+  if (rows === undefined) return { known: false, ok: true }
+  return { known: true, ok: rows.some(row => row.id === id) }
+}
+
+/**
+ * Whether this session's agent preset may still be changed.
+ *
+ * Changing the preset of a session that already ran under the old one is not a
+ * rename: the system prompt, the tool set and the whole composition change
+ * mid-conversation, so the transcript would contain turns produced by two
+ * different agents. For an imported session's *original* turns that is harmless
+ * — they came from WorkBuddy and were never governed by a DSH preset — but once
+ * DSH itself has appended turns, the session has a genuinely preset-dependent
+ * history. Those are refused instead of silently rewritten.
+ *
+ * The signal is the import watermark: the import stamps `lastSeq = events - 1`,
+ * and every later append (a resume, a new turn) pushes the real event count past
+ * it. A missing watermark means the artifact was not written by this plugin, and
+ * then we cannot tell — we allow it, since the picker only ever offers sessions
+ * this plugin imported.
+ *
+ * @param {string} artifactPath
+ * @returns {{ ok: boolean, events?: number, extra?: number, reason?: string }}
+ */
+function presetChangeAllowed(artifactPath) {
+  let session
+  try {
+    session = readDshSession(artifactPath)
+  } catch (error) {
+    return { ok: false, reason: `无法解析会话产物：${error?.message ?? String(error)}` }
+  }
+  const events = Array.isArray(session.events) ? session.events.length : 0
+  const watermark = readWatermark(session.dir)
+  if (Number.isInteger(watermark.lastSeq) && watermark.lastSeq >= 0) {
+    const extra = events - (watermark.lastSeq + 1)
+    if (extra > 0) {
+      return {
+        ok: false,
+        events,
+        extra,
+        reason: `这个会话在 DSH 里已经继续对话过（比导入时多了 ${extra} 条事件），换预设会让同一段对话前后跑在不同的 agent 下`,
+      }
+    }
+  }
+  return { ok: true, events }
+}
+
 /** Register the client-facing routes; returns a disposer. */
 function registerRoutes(host, ctx) {
   const disposers = []
+
+  // The preset roster, for the import dialog's picker and the row editor.
+  // Read-only, and the page needs it before it can offer any choice at all.
+  disposers.push(host.register({
+    kind: 'exact',
+    path: `${PREFIX}/presets`,
+    handler: async (request, response) => {
+      if (request.method !== 'GET') {
+        sendJson(response, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      if (!sameOrigin(ctx, request)) {
+        sendJson(response, 403, { ok: false, error: 'untrusted origin' })
+        return
+      }
+      try {
+        const presets = await listPresets(ctx)
+        sendJson(response, 200, {
+          ok: true,
+          presets: presets ?? [],
+          // The page must know whether the list is authoritative: with no
+          // registry it should not offer a picker it cannot populate.
+          known: presets !== undefined,
+          default: DEFAULT_AGENT_PRESET,
+        })
+      } catch (error) {
+        sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })
+      }
+    },
+  }))
+
+  // Change the agent preset of already-imported sessions. Rewrites one header
+  // line per session; the event frames are copied through untouched.
+  disposers.push(host.register({
+    kind: 'exact',
+    path: `${PREFIX}/preset`,
+    handler: async (request, response) => {
+      if (request.method !== 'POST') {
+        sendJson(response, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      if (!sameOrigin(ctx, request)) {
+        sendJson(response, 403, { ok: false, error: 'untrusted origin' })
+        return
+      }
+      let body
+      try {
+        body = await readJsonBody(request)
+      } catch (error) {
+        sendJson(response, 400, { ok: false, error: `bad request body: ${error.message}` })
+        return
+      }
+
+      const preset = normalizePresetId(body?.preset)
+      if (typeof body?.preset !== 'string' || body.preset.trim().length === 0) {
+        sendJson(response, 400, { ok: false, error: 'preset is required' })
+        return
+      }
+      let ids
+      try {
+        ids = normalizeIds(body?.ids)
+      } catch (error) {
+        sendJson(response, 400, { ok: false, error: error.message })
+        return
+      }
+      if (ids === undefined || ids.length === 0) {
+        sendJson(response, 400, { ok: false, error: 'ids is required' })
+        return
+      }
+
+      try {
+        // Existence check against the roster. A typo here would produce a
+        // session that fails to mount on resume, which is worse than a refusal.
+        const known = await presetExists(ctx, preset)
+        if (known.known && !known.ok) {
+          sendJson(response, 400, { ok: false, error: `未知的 agent 预设：${preset}` })
+          return
+        }
+
+        const root = sessionsRoot()
+        const changed = []
+        const skipped = []
+        const failed = []
+
+        for (const rawId of ids) {
+          // Rows in the imported tab carry the import id (wb-…); adopt keeps
+          // whatever id the artifact already had. Try both so neither shape
+          // silently reports "not found".
+          const candidates = [rawId.startsWith('wb-') ? rawId : `wb-${rawId}`, rawId]
+          let dir
+          for (const candidate of candidates) {
+            dir = findExistingSession(root, candidate)
+            if (dir) break
+          }
+          if (!dir) {
+            failed.push({ id: rawId, error: '找不到已导入的会话产物' })
+            continue
+          }
+
+          const artifact = join(dir, CURRENT_ARTIFACT_FILENAME)
+          const path = existsSync(artifact) ? artifact : join(dir, 'session.jsonl.zstd')
+          if (!existsSync(path)) {
+            failed.push({ id: rawId, error: '产物文件不存在' })
+            continue
+          }
+
+          const allowed = presetChangeAllowed(path)
+          if (!allowed.ok) {
+            skipped.push({ id: rawId, reason: allowed.reason })
+            continue
+          }
+
+          try {
+            // Read the current value first so the response can report a real
+            // from → to transition instead of guessing.
+            const before = readDshSession(path).header?.agentPreset ?? DEFAULT_AGENT_PRESET
+            const result = rewriteSessionHeader(path, header => ({ ...header, agentPreset: preset }))
+            changed.push({ id: rawId, from: before, to: result.header.agentPreset, changed: result.changed })
+          } catch (error) {
+            failed.push({ id: rawId, error: error?.message ?? String(error) })
+          }
+        }
+
+        sendJson(response, 200, { ok: true, preset, changed, skipped, failed })
+      } catch (error) {
+        sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })
+      }
+    },
+  }))
 
   disposers.push(host.register({
     kind: 'exact',

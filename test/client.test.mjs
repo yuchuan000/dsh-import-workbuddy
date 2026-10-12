@@ -413,6 +413,8 @@ const SESSION_DONE = {
   id: 'wb-ccc', title: '已经导过的会话', cwd: 'D:\\proj\\c', projectDir: 'c',
   createdAt: 1_759_999_000_000, messageCount: 4, alreadyImported: true,
   deletedInWorkBuddy: false, adopted: false, hidden: false, grouped: true, canSyncBack: true,
+  // 已导入的行才报这个字段：要改就得先看见现在挂在哪。
+  agentPreset: 'standard'
 }
 /** WorkBuddy 侧已删除、轨迹文件还在的会话。它只是一个普通候选：标记已去掉。 */
 const SESSION_DELETED = {
@@ -444,7 +446,12 @@ const SESSION_UNGROUPED = {
  *   /unhide    命中的条目 hidden:false（回收站 -> 待导入）。
  *   /regroup   命中的条目 grouped:true。
  */
-function fakeFetch({ sessions, importResult, syncResult, restoreResult } = {}) {
+function fakeFetch({ sessions, importResult, syncResult, restoreResult, presets } = {}) {
+  // `presets` 为 null 表示这个部署没有 agent-preset registry：页面要据此
+  // 换成自由输入，而不是摆一个填不出来的下拉。
+  const roster = presets === null
+    ? []
+    : (presets ?? [{ id: 'standard', name: '标准模式' }, { id: 'ptc' }, { id: 'minimal', name: '精简' }])
   const calls = []
   let current = (sessions ?? [SESSION_A, SESSION_B, SESSION_DONE]).map(s => ({ ...s }))
   const respond = (payload) => ({ ok: true, status: 200, json: async () => payload })
@@ -515,6 +522,24 @@ function fakeFetch({ sessions, importResult, syncResult, restoreResult } = {}) {
         ok: true,
         grouped: (body?.ids ?? []).map(id => ({ id, workspaceTitle: 'proj' })),
         failed: [],
+      })
+    }
+    if (url.endsWith('/presets') && method === 'GET') {
+      return respond({
+        ok: true,
+        presets: roster.map(row => ({ ...row })),
+        known: presets !== null,
+        default: 'standard',
+      })
+    }
+    if (url.endsWith('/preset') && method === 'POST') {
+      const ids = new Set(body?.ids ?? [])
+      current = current.map(s => (ids.has(s.id) ? { ...s, agentPreset: body?.preset } : s))
+      return respond({
+        ok: true,
+        preset: body?.preset,
+        changed: (body?.ids ?? []).map(id => ({ id, from: 'standard', to: body?.preset, changed: true })),
+        skipped: [], failed: [],
       })
     }
     return { ok: false, status: 404, json: async () => ({ ok: false, error: 'not found' }) }
@@ -1384,6 +1409,70 @@ export async function run() {
       if (toast === undefined) throw new Error('应弹出提示')
       if (toast.props.key <= before) throw new Error(`toast 未刷新: key ${toast.props.key} <= ${before}`)
       if (!String(toast.props.text).includes('已导入 1 个会话')) throw new Error(`toast 文案: ${toast.props.text}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  // --- agent 预设 -------------------------------------------------------------
+
+  await checkAsync('已导入的行报出当前预设，勾选后出现「改预设」与目标下拉', async () => {
+    const fake = fakeFetch()
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, tabButton(view, 'imported'))
+      // 看不见现在挂在哪，「改成指定模式」就无从下手。
+      if (!text(view.tree()).includes('当前预设')) throw new Error('已导入的行应报当前预设')
+      if (button(view, '改预设') !== undefined) throw new Error('没勾选时不该出现改预设按钮')
+
+      await change(view, checkbox(view, '已经导过的会话'), { checked: true })
+      const go = button(view, '改预设')
+      if (go === undefined) throw new Error('勾选已导入的行后应出现改预设按钮')
+      if (!text(go).includes('1 条')) throw new Error(`按钮应报条数: ${text(go)}`)
+      const select = hosts(view, n => n.type === 'select' && n.props['aria-label'] === 'Agent 预设').at(-1)
+      if (select === undefined) throw new Error('应有目标预设下拉')
+      const options = collect(select).filter(n => n.type === 'option').map(n => n.props.value)
+      if (options.join(',') !== 'standard,ptc,minimal') throw new Error(`下拉应列出名单: ${options.join(',')}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('改预设发的是这一栏选的那个，而不是配置弹窗里那个', async () => {
+    const fake = fakeFetch()
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, tabButton(view, 'imported'))
+      await change(view, checkbox(view, '已经导过的会话'), { checked: true })
+      const select = hosts(view, n => n.type === 'select' && n.props['aria-label'] === 'Agent 预设').at(-1)
+      await change(view, select, { value: 'ptc' })
+      await click(view, button(view, '改预设'))
+
+      const sent = fake.calls.find(call => call.url.endsWith('/preset'))
+      if (sent === undefined) throw new Error('应发出 /preset 请求')
+      if (sent.body.preset !== 'ptc') throw new Error(`发送的是下拉里选的那个: ${sent.body.preset}`)
+      if (sent.body.ids.join(',') !== 'wb-ccc') throw new Error(`只作用于勾选的行: ${sent.body.ids}`)
+      // 改完列表要跟着变，否则「改成功了」只是横幅上说说的。
+      if (!text(view.tree()).includes('ptc')) throw new Error('改完这一行应报新的预设')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('部署没有预设名单时，改预设退回自由输入而不是摆个空下拉', async () => {
+    const fake = fakeFetch({ presets: null })
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, tabButton(view, 'imported'))
+      await change(view, checkbox(view, '已经导过的会话'), { checked: true })
+      const select = hosts(view, n => n.type === 'select' && n.props['aria-label'] === 'Agent 预设').at(-1)
+      if (select !== undefined) throw new Error('没有名单时不该摆下拉')
+      const input = hosts(view, n => n.type === 'input' && n.props['aria-label'] === 'Agent 预设').at(-1)
+      if (input === undefined) throw new Error('没有名单时应退回自由输入')
+      await change(view, input, { value: 'mine' })
+      await click(view, button(view, '改预设'))
+      const sent = fake.calls.find(call => call.url.endsWith('/preset'))
+      if (sent?.body?.preset !== 'mine') throw new Error(`应发送手填的预设: ${sent?.body?.preset}`)
     } finally { globalThis.fetch = realFetch }
   })
 

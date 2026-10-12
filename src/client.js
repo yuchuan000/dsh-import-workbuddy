@@ -58,6 +58,19 @@ window.__ModuleLoader__.load({
       // The dialog's own explanation, behind the "?" under its title. It used to
       // be the description paragraph; nothing here is read without asking.
       'settings.configAbout': '这里的改动立即生效，关掉即生效完毕。',
+      'settings.preset': 'Agent 预设',
+      'settings.presetHint': '导入的会话用哪个 agent 预设跑。默认「标准模式」。',
+      'settings.presetTip1': '预设决定这段会话的 system prompt、可用工具与整体行为。',
+      'settings.presetTip2': '导入之后仍可在「已导入」页签里逐条改；但已经继续对话过的会话不能再改。',
+      'settings.presetNone': '（当前 DSH 没有提供可选预设）',
+      'settings.presetUnknown': '未知预设：{id}',
+      'settings.setPreset': '改预设（{n} 条）',
+      'settings.presetFor': '为所选 {n} 条改 agent 预设',
+      'settings.presetApplying': '正在应用…',
+      'settings.presetDone': '已改 {n} 条：{ids}',
+      'settings.presetSkipped': '跳过 {n} 条（已继续对话过）：{ids}',
+      'settings.presetFailed': '失败 {n} 条：{ids}',
+      'settings.presetCurrent': '当前预设：{id}',
       'settings.close': '关闭',
       'settings.tip': '说明',
       // 正文区那个小标题。叫「帮助」不叫「说明」：它管的是「这一栏是干什么的」，
@@ -173,6 +186,19 @@ window.__ModuleLoader__.load({
       'settings.config': 'Settings',
       'settings.configTitle': 'Import settings',
       'settings.configAbout': 'Every change here applies immediately — just close this when you are done.',
+      'settings.preset': 'Agent preset',
+      'settings.presetHint': 'Which agent preset imported sessions run under. Defaults to Standard.',
+      'settings.presetTip1': 'The preset decides this conversation\'s system prompt, tool set and overall behaviour.',
+      'settings.presetTip2': 'You can still change it per session in the Imported tab — except for sessions you have already continued in DSH.',
+      'settings.presetNone': '(this DSH offers no selectable presets)',
+      'settings.presetUnknown': 'Unknown preset: {id}',
+      'settings.setPreset': 'Change preset ({n})',
+      'settings.presetFor': 'Change the agent preset of {n} selected',
+      'settings.presetApplying': 'Applying…',
+      'settings.presetDone': 'Changed {n}: {ids}',
+      'settings.presetSkipped': 'Skipped {n} (already continued in DSH): {ids}',
+      'settings.presetFailed': 'Failed {n}: {ids}',
+      'settings.presetCurrent': 'Current preset: {id}',
       'settings.close': 'Close',
       'settings.tip': 'Explanation',
       'settings.help': 'Help',
@@ -342,6 +368,17 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Set the agent preset of already-imported sessions.
+     *
+     * The host rewrites only each artifact's header frame and refuses sessions
+     * that have been continued in DSH (their transcript would then span two
+     * different agents), so a refusal is a per-id result, not a thrown error.
+     */
+    async function postPreset(ids, preset) {
+      return api(`${PREFIX}/preset`, { method: 'POST', body: { ids, preset } })
+    }
+
+    /**
      * Sync mode's other half: push turns made in DSH back into the WorkBuddy
      * transcript. The host refuses without a watermark, so this cannot
      * duplicate history even if the user keeps pressing the button.
@@ -508,13 +545,55 @@ window.__ModuleLoader__.load({
      *
      * Defaults are the plugin's long-standing behaviour: copy (the source file
      * is never touched) and keep tool calls as cards.
+     *
+     * `agentPreset` is '' until the roster has been read: an empty value means
+     * "let the host decide" (which is `standard`), and sending it would be
+     * indistinguishable from explicitly asking for the default. The picker only
+     * offers real ids once `/presets` has answered.
      */
-    const importOptions = { mode: 'copy', noTools: false, toolsAsText: false }
+    const importOptions = { mode: 'copy', noTools: false, toolsAsText: false, agentPreset: '' }
 
     function setOption(key, value) {
       if (importOptions[key] === value) return
       importOptions[key] = value
       notifyConfig()
+    }
+
+    /**
+     * The agent presets this deployment offers.
+     *
+     * Read once, lazily, and cached for the life of the page: the roster is
+     * fixed by the profile's composition, and re-reading it on every dialog
+     * open would put a round-trip in front of a control the user is about to
+     * click. A failed read leaves it empty, and the UI then says so rather than
+     * offering an empty dropdown.
+     */
+    const presetState = { loaded: false, loading: false, known: false, rows: [], error: '' }
+
+    async function loadPresets() {
+      if (presetState.loaded || presetState.loading) return
+      presetState.loading = true
+      notifyConfig()
+      try {
+        const payload = await api(`${PREFIX}/presets`)
+        presetState.rows = Array.isArray(payload.presets) ? payload.presets : []
+        presetState.known = payload.known === true
+        presetState.error = ''
+      } catch (error) {
+        presetState.rows = []
+        presetState.known = false
+        presetState.error = error?.message ?? String(error)
+      } finally {
+        presetState.loading = false
+        presetState.loaded = true
+        notifyConfig()
+      }
+    }
+
+    /** Human label for a preset id, falling back to the raw id. */
+    function presetLabel(id) {
+      const row = presetState.rows.find(entry => entry.id === id)
+      return row?.name && row.name.length > 0 ? `${row.name}（${id}）` : id
     }
 
     /**
@@ -593,6 +672,11 @@ window.__ModuleLoader__.load({
       marginTop: 8, maxHeight: 340, overflowY: 'auto',
       border: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
       borderRadius: 8,
+    }
+    // 改预设那个自由输入框：只在部署没提供预设名单时出现，样式跟下拉对齐，
+    // 好让它看起来是同一个控件的另一种形态，而不是另一套东西。
+    const presetInputStyle = {
+      ...selectStyle, width: 130, flex: 'none',
     }
     const rowStyle = {
       display: 'flex', alignItems: 'flex-start', gap: 10,
@@ -1238,6 +1322,13 @@ window.__ModuleLoader__.load({
       // follow: it watches the same cells every writer touches.
       useEffect(() => configSubscribe(() => forceRender(n => n + 1)), [])
 
+      // Fetch the preset roster when the dialog first opens. Deliberately here
+      // and not at page mount: a user who never opens the dialog never pays for
+      // the request, and the picker is only ever visible inside it.
+      useEffect(() => {
+        if (configState.open) loadPresets()
+      }, [configState.open])
+
       if (!configState.open) return null
 
       const mode = importOptions.mode
@@ -1255,6 +1346,55 @@ window.__ModuleLoader__.load({
           key: 'tip', t: __, placement: 'down', items: [__('settings.configAbout')],
         }),
       ])
+
+      /**
+       * The agent-preset picker.
+       *
+       * Three states, and the difference matters to the user:
+       *   - roster not read yet  → disabled, and the read is kicked off here
+       *   - roster read, empty   → say so; an empty dropdown is a dead control
+       *   - roster read, rows    → the real choice
+       * The current value falls back to `standard` when the page has not been
+       * told otherwise, which is exactly what the host would do anyway.
+       */
+      function presetSelect() {
+        const selected = importOptions.agentPreset || 'standard'
+        const rows = presetState.rows
+        const rowById = rows.find(row => row.id === selected)
+        // A selected id the roster does not know (older import, or a preset
+        // removed since): keep it visible instead of silently showing another
+        // preset as if it were current.
+        const staleOption = selected && !rowById && presetState.known
+        const disabled = presetState.loading || rows.length === 0
+
+        return React.createElement('div', { key: 'preset-select-wrap' }, [
+          React.createElement('select', {
+            key: 'preset-select',
+            value: selected,
+            disabled,
+            style: { ...selectStyle, ...(disabled ? { opacity: 0.6, cursor: 'default' } : {}) },
+            'aria-label': __('settings.preset'),
+            onChange: (event) => setOption('agentPreset', event.target.value),
+          }, [
+            ...rows.map(row => React.createElement('option', {
+              key: row.id, value: row.id,
+            }, row.name && row.name.length > 0 ? `${row.name}（${row.id}）` : row.id)),
+            staleOption
+              ? React.createElement('option', { key: `stale-${selected}`, value: selected },
+                  __('settings.presetUnknown', { id: selected }))
+              : null,
+          ]),
+          React.createElement('div', { key: 'preset-hint', style: { ...metaStyle, marginTop: 4 } },
+            presetState.loading
+              ? __('settings.loading')
+              : rows.length === 0
+                ? __('settings.presetNone')
+                : __('settings.presetHint')),
+          presetState.error
+            ? React.createElement('div', { key: 'preset-err', style: errStyle }, presetState.error)
+            : null,
+        ])
+      }
 
       return React.createElement(Modal, {
         open: true,
@@ -1294,6 +1434,24 @@ window.__ModuleLoader__.load({
         ]),
 
         React.createElement('div', { key: 'sep', style: separatorStyle }),
+
+        // Agent preset for the sessions this import creates. Placed before the
+        // two switches because it decides more about the conversation than they
+        // do: they shape how tool calls are rendered, it shapes the agent.
+        React.createElement('div', { key: 'preset-head', style: { ...settingLabelRowStyle, marginBottom: 2 } }, [
+          React.createElement('span', {
+            key: 'l', style: { ...settingLabelStyle, fontWeight: 600 },
+          }, __('settings.preset')),
+          React.createElement(InfoTip, {
+            key: 'tip',
+            t: __,
+            label: __('settings.preset'),
+            items: [__('settings.presetTip1'), __('settings.presetTip2')],
+          }),
+        ]),
+        presetSelect(),
+
+        React.createElement('div', { key: 'sep2', style: separatorStyle }),
         React.createElement(OptionRow, {
           key: 'opt-notools',
           label: __('settings.noTools'),
@@ -1361,6 +1519,13 @@ window.__ModuleLoader__.load({
       const [grouping, setGrouping] = useState(false)
       const [hiding, setHiding] = useState(false)
       const [unhiding, setUnhiding] = useState(false)
+      // 改 agent 预设也是「目标态」动作：它写磁盘，且可能只成功一部分
+      // （已继续对话过的行会被拒），所以要自己一个忙碌位。
+      const [presetBusy, setPresetBusy] = useState(false)
+      // 「改成哪个预设」是这一栏自己的选择，不用配置弹窗里那个值：那个值决定
+      // 的是**新导入的会话**生来挂在哪，这一个决定把**已经进来的**改成哪个。
+      // 共用一个值会让人以为改导入设置会连带改掉已导入的行 —— 反过来也一样。
+      const [targetPreset, setTargetPreset] = useState('')
       // Paging. `page` is zero-based and the slice is derived (`paginate`), so a
       // filter or an import that shortens the list can never strand the page on
       // a slice it has no way back from.
@@ -1394,6 +1559,13 @@ window.__ModuleLoader__.load({
       }, [])
 
       useEffect(() => { refresh() }, [refresh])
+
+      // The "change preset" control lives in the imported tab, so the roster is
+      // only worth fetching once that tab is actually open — same reasoning as
+      // the config dialog: nobody pays for a list nobody can see yet.
+      useEffect(() => {
+        if (tab === TAB_IMPORTED) loadPresets()
+      }, [tab])
 
       // The plan line quotes the dialog's policy, so the page has to re-render
       // when the dialog changes it.
@@ -1442,6 +1614,13 @@ window.__ModuleLoader__.load({
         return row?.hidden !== true && row?.alreadyImported === true && row.grouped === false
       })
       const unhideIds = [...picked].filter(id => byId.get(id)?.hidden === true)
+      // 改预设的候选：已经在 DSH 里、且没被划进回收站的。是否「已继续对话过」
+      // 由 host 判定（它要看水位线），页面不猜 —— 猜错会让按钮要么永远不出现，
+      // 要么点了才被拒。
+      const presetIds = [...picked].filter((id) => {
+        const row = byId.get(id)
+        return row?.hidden !== true && row?.alreadyImported === true
+      })
 
       // Select all reaches the whole filtered list, not the page. It used to
       // stop at the page on the grounds that selecting rows the user cannot see
@@ -1489,7 +1668,14 @@ window.__ModuleLoader__.load({
         setError(null)
         setNote(null)
         try {
-          const result = await postImport(ids, { ...importOptions })
+          // `agentPreset` is dropped when empty: '' means "not chosen yet", and
+          // sending it would ask the host to normalize an id that was never
+          // picked — the host's answer ('standard') is right, but relying on
+          // that would make "no choice" and "chose Standard" look identical in
+          // the request, which is exactly the confusion this guards against.
+          const options = { ...importOptions }
+          if (!options.agentPreset) delete options.agentPreset
+          const result = await postImport(ids, options)
           // Pull the sidebar in parallel with the panel re-read: the rows the
           // user is about to look for live in the sidebar, not here.
           const listed = resyncSessionList(result.imported.map(entry => entry.id))
@@ -1566,6 +1752,107 @@ window.__ModuleLoader__.load({
         }
         setSyncing(false)
       }, [syncIds, refresh, __])
+
+      /**
+       * Change the agent preset of the selected already-imported sessions.
+       *
+       * Unlike sync/put-back this can legitimately refuse individual rows: a
+       * session that has been continued in DSH cannot switch presets without its
+       * transcript spanning two agents. Those come back in `skipped`, so the
+       * user is told which ones and why instead of seeing a silent no-op.
+       */
+      /**
+       * The preset the "change preset" button would apply right now.
+       *
+       * Resolved in one place because both the control and the click have to
+       * mean the same thing: a select that shows `standard` while the button
+       * sends something else is a control that lies. When the roster cannot
+       * honour the current value — it was removed, or it came from an older
+       * import — the roster's own default wins, which is what the host would
+       * have picked anyway.
+       *
+       * @returns {string}
+       */
+      const currentTargetPreset = () => {
+        const wanted = targetPreset || importOptions.agentPreset || 'standard'
+        const rows = presetState.rows
+        if (rows.length === 0) return wanted
+        if (rows.some(row => row.id === wanted)) return wanted
+        return (rows.find(row => row.isDefault) ?? rows[0]).id
+      }
+
+      /**
+       * The control that picks the target preset.
+       *
+       * A select when the deployment publishes a roster, a free-form input when
+       * it does not: refusing to offer anything without a roster would make the
+       * feature vanish on exactly the deployments where the user still knows
+       * the id they want — and the host accepts an unknown id there precisely
+       * because it cannot disprove one.
+       */
+      const targetSelect = () => {
+        const value = currentTargetPreset()
+        const rows = presetState.rows
+        if (rows.length > 0) {
+          return React.createElement('select', {
+            key: 'target-select',
+            value,
+            disabled: busy,
+            style: { ...selectStyle, maxWidth: 200, ...(busy ? { opacity: 0.6, cursor: 'default' } : {}) },
+            'aria-label': __('settings.preset'),
+            onChange: (event) => setTargetPreset(event.target.value),
+          }, rows.map(row => React.createElement('option', {
+            key: row.id, value: row.id,
+          }, row.name && row.name.length > 0 ? `${row.name}（${row.id}）` : row.id)))
+        }
+        return React.createElement('input', {
+          key: 'target-input',
+          value,
+          disabled: busy,
+          spellCheck: false,
+          style: presetInputStyle,
+          'aria-label': __('settings.preset'),
+          onChange: (event) => setTargetPreset(event.target.value),
+        })
+      }
+
+      const onSetPreset = useCallback(async () => {
+        if (presetIds.length === 0) return
+        const preset = currentTargetPreset()
+        setPresetBusy(true)
+        setError(null)
+        setNote(null)
+        try {
+          const result = await postPreset(presetIds, preset)
+          await refresh(true)
+          const done = result.changed ?? []
+          const skipped = result.skipped ?? []
+          const failed = result.failed ?? []
+          showToast(
+            done.length > 0
+              ? __('settings.presetDone', { n: done.length, ids: done.map(entry => entry.id).join('、') })
+              : __('settings.presetSkipped', { n: skipped.length, ids: skipped.map(entry => entry.id).join('、') }),
+            done.length > 0 ? 'success' : undefined,
+          )
+          const problems = []
+          if (skipped.length > 0) {
+            problems.push(__('settings.presetSkipped', {
+              n: skipped.length,
+              ids: skipped.slice(0, 5).map(entry => `${entry.id}（${entry.reason}）`).join('\n'),
+            }))
+          }
+          if (failed.length > 0) {
+            problems.push(__('settings.presetFailed', {
+              n: failed.length,
+              ids: failed.slice(0, 5).map(entry => `${entry.id}: ${entry.error}`).join('\n'),
+            }))
+          }
+          if (problems.length > 0) setNote(problems.join('\n\n'))
+        } catch (reason) {
+          setError(reason?.message ?? String(reason))
+        }
+        setPresetBusy(false)
+      }, [presetIds, targetPreset, refresh, __])
 
       /**
        * Undo for adopt mode: archived files go home, deletion marks clear.
@@ -1721,6 +2008,25 @@ window.__ModuleLoader__.load({
         // 一个要用户先想清楚的问题，而多数时候答案只有一个（甚至没有）。
         : tab === TAB_IMPORTED
           ? [
+              // 改预设放在最前：它管的是「这段会话由哪个 agent 跑」，比回写、
+              // 归组、归还都更根本。只在真有已导入的行被选中时出现。
+              presetIds.length > 0 || presetBusy
+                ? React.createElement('div', {
+                    key: 'preset',
+                    style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+                  }, [
+                    targetSelect(),
+                    React.createElement('button', {
+                      key: 'go',
+                      type: 'button',
+                      style: presetIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
+                      disabled: presetIds.length === 0 || busy,
+                      onClick: onSetPreset,
+                    }, presetBusy
+                      ? __('settings.presetApplying')
+                      : __('settings.setPreset', { n: presetIds.length })),
+                  ])
+                : null,
               syncIds.length > 0 || syncing
                 ? React.createElement('button', {
                     key: 'sync',
@@ -1921,6 +2227,12 @@ window.__ModuleLoader__.load({
                         // 还接着聊的会话，按创建时间会被压到列表底下。
                         formatTime(session.updatedAt ?? session.createdAt),
                         session.messageCount !== undefined ? ` · ${session.messageCount} 条消息` : '',
+                        // 已导入的行报自己挂在哪个 agent 预设下。看不见现在是什么，
+                        // 「改成指定模式」就无从下手；待导入的行还没有 DSH 产物，
+                        // 报了也是猜。
+                        tab === TAB_IMPORTED && session.agentPreset
+                          ? ` · ${__('settings.presetCurrent', { id: presetLabel(session.agentPreset) })}`
+                          : '',
                       ].join('')),
                     ]),
                     ...badges,

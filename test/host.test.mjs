@@ -42,6 +42,8 @@ const ADOPTED_PATH = '/__dsh-import-workbuddy/adopted'
 const HIDE_PATH = '/__dsh-import-workbuddy/hide'
 const UNHIDE_PATH = '/__dsh-import-workbuddy/unhide'
 const REGROUP_PATH = '/__dsh-import-workbuddy/regroup'
+const PRESETS_PATH = '/__dsh-import-workbuddy/presets'
+const PRESET_PATH = '/__dsh-import-workbuddy/preset'
 
 const ZSTD_C_CHECKSUM = zlib.constants.ZSTD_c_checksumFlag
 const { zstdCompressSync } = zlib
@@ -777,6 +779,118 @@ export async function run() {
     await checkAsync('/unhide 方法不符返回 405', async () => {
       const { status } = await call(route(UNHIDE_PATH))
       assert.equal(status, 405)
+    })
+
+    sb.restore()
+  }
+
+  // N. agent 预设：导入时指定 + 导入后改写
+  {
+    const sb = makeSandbox()
+    sb.seed('proj-a', [
+      { id: 'sess-1', cwd: 'd:/work/proj-a', userText: 'first', assistantText: 'reply' },
+      { id: 'sess-2', cwd: 'd:/work/proj-a', userText: 'second', assistantText: 'reply2' },
+    ])
+    // 假的 agent-preset registry：只提供 host 真正用到的两个成员。
+    const roster = [
+      { id: 'standard', name: '标准模式' },
+      { id: 'ptc' },
+      { id: 'minimal', name: '精简' },
+    ]
+    const registry = {
+      async list() { return roster.map(row => ({ ...row })) },
+      defaultId: 'standard',
+    }
+    const { route } = makeHarness({ agentPresets: registry })
+
+    await checkAsync('GET /presets 返回名单，并标出默认那个', async () => {
+      const { status, payload } = await call(route(PRESETS_PATH))
+      assert.equal(status, 200)
+      assert.equal(payload.known, true)
+      assert.deepEqual(payload.presets.map(row => row.id), ['standard', 'ptc', 'minimal'])
+      assert.equal(payload.presets.find(row => row.id === 'standard').isDefault, true)
+      assert.equal(payload.presets.find(row => row.id === 'ptc').isDefault, undefined)
+      assert.equal(payload.default, 'standard')
+    })
+
+    await checkAsync('导入时指定预设，表头就写那个预设', async () => {
+      const done = await call(route(IMPORT_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-1'], options: { agentPreset: 'ptc' } },
+      })
+      assert.equal(done.status, 200)
+      assert.equal(done.payload.imported.length, 1)
+      const { payload } = await call(route(SESSIONS_PATH))
+      const row = payload.sessions.find(s => s.id === 'wb-sess-1')
+      assert.equal(row.alreadyImported, true)
+      assert.equal(row.agentPreset, 'ptc')
+    })
+
+    await checkAsync('不指定时落回 standard（名单上的默认值）', async () => {
+      await call(route(IMPORT_PATH), { method: 'POST', body: { ids: ['wb-sess-2'] } })
+      const { payload } = await call(route(SESSIONS_PATH))
+      assert.equal(payload.sessions.find(s => s.id === 'wb-sess-2').agentPreset, 'standard')
+    })
+
+    await checkAsync('POST /preset 改写表头，并回报 from → to', async () => {
+      const { status, payload } = await call(route(PRESET_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-1'], preset: 'minimal' },
+      })
+      assert.equal(status, 200)
+      assert.equal(payload.changed.length, 1)
+      assert.equal(payload.changed[0].from, 'ptc')
+      assert.equal(payload.changed[0].to, 'minimal')
+      const after = await call(route(SESSIONS_PATH))
+      assert.equal(after.payload.sessions.find(s => s.id === 'wb-sess-1').agentPreset, 'minimal')
+    })
+
+    await checkAsync('POST /preset 拒绝名单外的预设', async () => {
+      const { status } = await call(route(PRESET_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-1'], preset: 'nope' },
+      })
+      assert.equal(status, 400)
+    })
+
+    await checkAsync('POST /preset 缺少 ids / preset 返回 400', async () => {
+      assert.equal((await call(route(PRESET_PATH), { method: 'POST', body: { ids: ['wb-sess-1'] } })).status, 400)
+      assert.equal((await call(route(PRESET_PATH), { method: 'POST', body: { preset: 'ptc' } })).status, 400)
+    })
+
+    await checkAsync('在 DSH 里继续聊过的会话被跳过，并说明原因', async () => {
+      const dir = findExistingSession(sb.sessionsRoot, 'wb-sess-1')
+      assert.ok(dir, '应能定位到产物目录')
+      // 水位线退到 0，等于「导入之后又发生了事件」：真实场景是事件真的变多，
+      // 这里造的是 host 用来判断的那一个数。
+      writeFileSync(join(dir, 'workbuddy-sync.json'), JSON.stringify({ version: 1, lastSeq: 0 }))
+      const { payload } = await call(route(PRESET_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-1'], preset: 'standard' },
+      })
+      assert.equal(payload.changed.length, 0)
+      assert.equal(payload.skipped.length, 1)
+      assert.match(payload.skipped[0].reason, /继续对话/)
+      // 被跳过的行保持原值：不写半截状态。
+      const after = await call(route(SESSIONS_PATH))
+      assert.equal(after.payload.sessions.find(s => s.id === 'wb-sess-1').agentPreset, 'minimal')
+    })
+
+    await checkAsync('找不到产物的 id 进 failed，不静默当成成功', async () => {
+      const { payload } = await call(route(PRESET_PATH), {
+        method: 'POST', body: { ids: ['wb-nothing'], preset: 'ptc' },
+      })
+      assert.equal(payload.failed.length, 1)
+      assert.equal(payload.failed[0].id, 'wb-nothing')
+    })
+
+    await checkAsync('没有 registry 的部署：known=false，改预设仍放行', async () => {
+      const { route: bare } = makeHarness()
+      const listed = await call(bare(PRESETS_PATH))
+      assert.equal(listed.payload.known, false)
+      assert.deepEqual(listed.payload.presets, [])
+      const done = await call(bare(PRESET_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-2'], preset: 'anything' },
+      })
+      assert.equal(done.status, 200)
+      assert.equal(done.payload.changed.length, 1)
+      assert.equal(done.payload.changed[0].to, 'anything')
     })
 
     sb.restore()
