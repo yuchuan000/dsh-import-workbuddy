@@ -384,6 +384,10 @@ window.__ModuleLoader__.load({
     // imported sessions used to only ever appear after a restart).
 
     let sessionsSvc
+    // Cleanup for the DOM-level wiring cordis does not own (the settings nav
+    // icon's style node and observer) — run on dispose so a plugin reload
+    // leaves nothing behind.
+    const navIconDisposers = []
 
     function pullSessionList() {
       try {
@@ -1966,6 +1970,99 @@ window.__ModuleLoader__.load({
       } catch { /* namespace already registered */ }
     }
 
+    // --- settings nav icon ---------------------------------------------------
+
+    // The settings shell picks a row's glyph from a hardcoded list of section
+    // ids (`account`, `models`, `plugins`, …) and falls back to the gear for
+    // everything else — the same gear 通用设置 carries, so this row was
+    // indistinguishable from it. The `settings.section` slot takes no icon; the
+    // shell says so itself ("kept local until the upstream slot accepts icons").
+    //
+    // So the glyph is patched from the DOM: the gear is hidden and a mask paints
+    // ours in its place. Painting with `currentColor` is what keeps it honest —
+    // it follows the row's own label colour, so the active row and both themes
+    // are handled without a second rule.
+    const NAV_ICON_ATTR = 'data-import-workbuddy-nav-icon'
+    // An arrow entering a frame — "log in / import", the direction this page is
+    // about (WorkBuddy → DSH). Not the arrow-into-a-box the shell already uses
+    // for 归档会话: at 16px the two would read as the same glyph. Same 16px box
+    // and 1.3px stroke as the glyphs it sits between. Black, because a mask only
+    // reads the alpha — the colour comes from the element it is painted onto.
+    const NAV_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M9.5 2.75H12.25A1.5 1.5 0 0 1 13.75 4.25V11.75A1.5 1.5 0 0 1 12.25 13.25H9.5"/>'
+      + '<path d="M2.25 8H7.5"/>'
+      + '<path d="M5.25 5.5L7.75 8L5.25 10.5"/>'
+      + '</svg>'
+
+    function navIconCss() {
+      const mask = `url("data:image/svg+xml,${encodeURIComponent(NAV_ICON_SVG)}")`
+      // The ::before replaces the svg rather than overlaying it: same flex slot,
+      // same 16px, so the label does not shift.
+      return [
+        `button[${NAV_ICON_ATTR}]>svg{display:none}`,
+        `button[${NAV_ICON_ATTR}]::before{content:'';flex:none;width:16px;height:16px;`,
+        `background:currentColor;-webkit-mask:${mask} center/contain no-repeat;`,
+        `mask:${mask} center/contain no-repeat}`,
+      ].join('')
+    }
+
+    /**
+     * The row's own label, or null. Class names are hashed per build, so the
+     * shape — an svg followed by one span — is all there is to recognise a nav
+     * cell by; the label text is what tells ours from the rest.
+     */
+    function navCellLabel(cell) {
+      const kids = cell.children ? Array.from(cell.children) : []
+      const tag = (node) => String(node.tagName ?? '').toLowerCase()
+      const svg = kids.find(node => tag(node) === 'svg')
+      const span = kids.find(node => tag(node) === 'span')
+      if (!svg || !span) return null
+      return String(span.textContent ?? '').trim()
+    }
+
+    function markNavIcons() {
+      const wanted = t('settings.nav')
+      const cells = document.querySelectorAll('nav button')
+      for (let i = 0; i < cells.length; i++) {
+        const cell = cells[i]
+        if (cell.getAttribute(NAV_ICON_ATTR) !== null) continue
+        if (navCellLabel(cell) !== wanted) continue
+        cell.setAttribute(NAV_ICON_ATTR, '')
+      }
+    }
+
+    function installNavIcon() {
+      // Never let a decoration take the page down: this runs inside apply, and
+      // everything it touches is an addition to a working panel.
+      try {
+        const style = document.createElement('style')
+        style.setAttribute(NAV_ICON_ATTR, '')
+        style.textContent = navIconCss()
+        // documentElement, not head: the head element is not in every stub, and a
+        // style node on the root still applies.
+        document.documentElement.appendChild(style)
+        navIconDisposers.push(() => style.remove())
+
+        markNavIcons()
+        // The panel is portalled, so a body-scoped observer is the reliable
+        // hook, coalesced to one pass a frame.
+        let scheduled = false
+        const schedule = () => {
+          if (scheduled) return
+          scheduled = true
+          const run = () => {
+            scheduled = false
+            try { markNavIcons() } catch { /* never break the UI */ }
+          }
+          if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(run)
+          else window.setTimeout(run, 16)
+        }
+        const observer = new MutationObserver(schedule)
+        observer.observe(document.body, { childList: true, subtree: true })
+        navIconDisposers.push(() => observer.disconnect())
+      } catch { /* never break the UI */ }
+    }
+
     function apply(ctx) {
       sessionsSvc = ctx.get('sessions')
       if (!sessionsSvc) ctx.inject(['sessions'], (sub) => { sessionsSvc = sub.sessions })
@@ -1998,6 +2095,15 @@ window.__ModuleLoader__.load({
         order: 140,
         ...(localeSvc ? { locale: NS } : {}),
       }, ConfigDialog))
+
+      installNavIcon()
+
+      // DOM-level wiring is not owned by cordis, so tear it down explicitly.
+      ctx.effect(() => () => {
+        for (const dispose of navIconDisposers.splice(0)) {
+          try { dispose() } catch { /* best effort */ }
+        }
+      }, 'import-workbuddy:nav-icon')
     }
 
     return { apply, inject: ['slots'] }

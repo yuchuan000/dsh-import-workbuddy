@@ -534,6 +534,45 @@ async function checkAsync(label, fn) {
 
 const realFetch = globalThis.fetch
 
+// Fake settings-nav rows, so the DOM-level icon patch is exercised: the real
+// panel is portalled into a document this test cannot render. `navCells` is what
+// `document.querySelectorAll('nav button')` answers with. The client bundle is
+// evaluated with `window`/`navigator` as parameters, so `document` and
+// `MutationObserver` have to exist as globals for it to reach the DOM at all.
+const navCells = []
+const createdNodes = []
+const fakeNode = (tagName, textContent = '') => ({ tagName, textContent })
+const fakeNavCell = (label) => ({
+  tagName: 'BUTTON',
+  children: [fakeNode('svg'), fakeNode('span', label)],
+  attrs: Object.create(null),
+  setAttribute(key, value) { this.attrs[key] = value },
+  getAttribute(key) { return key in this.attrs ? this.attrs[key] : null },
+})
+globalThis.MutationObserver = class MutationObserver { observe() {} disconnect() {} }
+globalThis.document = {
+  body: { appendChild() {}, removeChild() {}, contains: () => false },
+  documentElement: { appendChild() {} },
+  querySelector: () => null,
+  querySelectorAll: (selector) => (selector === 'nav button' ? navCells : []),
+  createElement: () => {
+    const node = {
+      style: {}, dataset: {}, textContent: '', children: [],
+      attrs: Object.create(null),
+      setAttribute(key, value) { this.attrs[key] = value },
+      getAttribute(key) { return key in this.attrs ? this.attrs[key] : null },
+      appendChild() {}, remove() {},
+    }
+    createdNodes.push(node)
+    return node
+  },
+  addEventListener() {},
+  removeEventListener() {},
+}
+const navIconStyle = () => createdNodes.find(
+  node => node.getAttribute('data-import-workbuddy-nav-icon') !== null,
+)
+
 export async function run() {
   check('bundle 注册唯一的 ModuleLoader entry', () => {
     const bundle = loadBundle()
@@ -569,6 +608,41 @@ export async function run() {
     const deps = applied.injections.map(i => i.deps.join('+'))
     if (!deps.includes('sessions')) throw new Error(`应 inject sessions，实际: ${deps.join(' | ')}`)
     if (!deps.includes('locale')) throw new Error(`应 inject locale，实际: ${deps.join(' | ')}`)
+  })
+
+  await checkAsync('设置导航里这一行换成导入图标，不再与通用设置同为齿轮', async () => {
+    // The shell hardcodes a glyph per section id and falls back to the gear for
+    // anything else — the gear 通用设置 carries. The slot takes no icon, so the
+    // row is patched from the DOM; this is the shape the patch works against.
+    navCells.length = 0
+    const mine = fakeNavCell('WorkBuddy 导入')
+    const other = fakeNavCell('通用设置')
+    const noLabel = { tagName: 'BUTTON', children: [fakeNode('svg')], attrs: Object.create(null),
+      setAttribute(key, value) { this.attrs[key] = value },
+      getAttribute(key) { return key in this.attrs ? this.attrs[key] : null } }
+    navCells.push(mine, other, noLabel)
+
+    runApply(loadBundle())
+
+    const style = navIconStyle()
+    if (!style) throw new Error('应注入一条样式，否则图标无从替换')
+    const css = String(style.textContent)
+    if (!css.includes('data-import-workbuddy-nav-icon')) throw new Error(`样式应作用于标记过的行: ${css}`)
+    if (!css.includes('>svg{display:none}')) throw new Error(`默认齿轮要隐藏: ${css}`)
+    // currentColor is what makes it follow the row's own label colour: the
+    // active row and both themes, without a second rule.
+    if (!css.includes('background:currentColor')) throw new Error(`图标颜色要跟随当前行: ${css}`)
+    if (!css.includes('mask:')) throw new Error(`图标应由 mask 画出: ${css}`)
+    // The artwork goes in as a data URI, so it is percent-encoded.
+    const decoded = decodeURIComponent(css)
+    if (!decoded.includes('M2.25 8H7.5')) throw new Error(`应是导入的图形: ${decoded.slice(0, 160)}`)
+    // 归档会话那一行用的是盒子轮廓（IconArchiveOutline），16px 下「箭头入盒」
+    // 与「箭头进门」会被看成同一个图形，所以这里不能是那个轮廓。
+    if (decoded.includes('M2.5 5.5V13.5')) throw new Error('不该复用归档图标的盒子轮廓')
+
+    if (mine.getAttribute('data-import-workbuddy-nav-icon') === null) throw new Error('本行要被标记')
+    if (other.getAttribute('data-import-workbuddy-nav-icon') !== null) throw new Error('别的行不该被标记')
+    if (noLabel.getAttribute('data-import-workbuddy-nav-icon') !== null) throw new Error('没有标题文字的按钮不是导航行')
   })
 
   await checkAsync('首次渲染显示加载态', async () => {
