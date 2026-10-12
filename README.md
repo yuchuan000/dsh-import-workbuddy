@@ -29,49 +29,82 @@ DSH ($DSH_HOME/sessions)  →  重启后出现在会话列表
 
 ---
 
-## ⚡️ 快速上手：把下面这段话复制给你的 AI Agent
+## ⚡️ 快速安装：把下面这段话复制给你的 AI Agent
 
-> 你不需要手动敲命令。把下面整段复制给任意一个能读写文件的 AI Agent
-> （DSH / Claude Code / Codex / Cursor 等），它会自己完成安装、导入和归组。
+> 目标是让 **DSH 设置里多出一页可视化面板**，**不是**用命令行导会话。
+> 把下面整段复制给任意一个能读写文件的 AI Agent（DSH / Claude Code / Codex / Cursor 等），
+> 它会自己把插件装好。
+>
+> ⚠️ **判错信号**：如果对方反过来问你「要导入哪些会话 / 要导哪几个 id」，
+> 说明它走成了**命令行模式** —— 只 `git clone` 了仓库、或只跑 `node import.mjs`，
+> 那是**一次性导入**，DSH 里**不会出现任何设置页**。
+> 插件必须落进 profile 的 `vendor/` + `node_modules/`，并写进 `dsh.profile.bundles`。
+> 遇到这种情况，把下面这段整段再贴一遍。
 
 ```text
-请帮我把 WorkBuddy 的聊天记录导入到 DeepSeek Harness (DSH)。按以下步骤做，每步做完告诉我结果：
+请帮我在 DeepSeek Harness (DSH) 里安装插件 dsh-import-workbuddy。
+目标是【DSH 设置里多出一页可视化导入面板】，不是用命令行导会话。
+按下面做，每步做完报告结果，任何一步失败就停下来问我。
 
-1. 克隆并进入项目：
+0. 前置检查
+   - node --version 需要 >= 22.19（DSH 需要 node:sqlite 与 zstd）
+   - 找到 DSH 的 profile 目录：
+       Windows  C:\Users\<用户名>\.dsh\profiles\desktop
+       macOS/Linux  ~/.dsh/profiles/desktop
+     注意 Windows 下 Node 的 process.env.HOME 是空的，别用 HOME 去拼路径。
+     该目录里应当有 package.json、vendor/、node_modules/。
+     如果 profiles/ 下不止一个目录、或 desktop 里没有 vendor/，先把
+     ~/.dsh/profiles/ 下的内容列给我看，不要猜。
+   - 告诉我你找到的实际路径，以及 DSH 是桌面端还是 dsh web。
+
+1. 取源码放进 vendor（vendor 里的副本不会被市场更新覆盖掉）
+   cd <profile 目录>/vendor
    git clone https://github.com/yuchuan000/dsh-import-workbuddy.git
-   cd dsh-import-workbuddy
+   # 已存在就 git pull
+   确认 vendor/dsh-import-workbuddy/ 下有：package.json、src/index.js、
+   src/client.js、lib/*.mjs、cordis.patch.yml。缺文件就停下来报告。
 
-2. 环境检查：确认 node --version >= 22.19（DSH 需要 node:sqlite 和 zstd）。
-   我的系统是 [Windows / macOS / Linux]，请按对应方式给命令。
+2. 在 profile 目录里注册依赖（注意是 profile 目录，不是 vendor 里）
+   cd <profile 目录>
+   npm pkg set dependencies.dsh-import-workbuddy=file:./vendor/dsh-import-workbuddy
 
-3. 先列出清单，不要写入。运行：
-   node import.mjs --list
-   把每个会话的 id、消息数、原目录整理成一张表念给我听。
+3. 写进 bundle 列表 —— 索引不要照抄，先读现成的
+   先读 package.json 里的 dsh.profile.bundles（是个数组，长度因机器而异），
+   把 "dsh-import-workbuddy" 追加到末尾；已经有了就跳过，别写重复项。
+   例：当前数组长度是 6，就执行
+     npm pkg set 'dsh.profile.bundles[6]=dsh-import-workbuddy'
 
-4. 【重要】等我从表里挑完要导入的会话，把挑中的 id 告诉我，
-   你再用 --only 精确导入，例如：
-     node import.mjs --only wb-aaaa,wb-bbbb        # 先预览
-     node import.mjs --only wb-aaaa,wb-bbbb --apply # 确认后写入
-   ⚠️ 不要用 --all，也不要自己替我决定导哪些 —— 我之前删过一些会话，
-   全量导入会把我不想留的又导回来。只导我点名的那几个。
+4. 让 node_modules 能找到它
+   Windows：  mklink /J node_modules\dsh-import-workbuddy vendor\dsh-import-workbuddy
+   macOS/Linux：ln -s ../vendor/dsh-import-workbuddy node_modules/dsh-import-workbuddy
+   如果 node_modules/dsh-import-workbuddy 已经存在，先确认它指向的是不是
+   vendor 下这份副本；不是就删掉重建。
 
-5. 把会话归入工作区分组（这一步不能省，否则全挤在「未分组」）：
-   注意 attach-workspaces.mjs 必须能解析 @deepseek-ai/* 依赖，
-   所以要在 DSH 的应用安装目录里运行，而不是在本仓库目录里。
-   先找到 DSH 安装目录（里面有 node_modules/@deepseek-ai 的那个文件夹），
-   把 attach-workspaces.mjs 复制进去，然后：
-     node attach-workspaces.mjs --only=wb-aaaa,wb-bbbb         # 先预览
-     node attach-workspaces.mjs --apply --only=wb-aaaa,wb-bbbb # 确认后写入
-   同样只处理我点名的那几个。原项目文件夹已被删除、因而无法归组的会话，
-   先列给我看，不要擅自删、也不要擅自建目录。
+5. 【重要】这一步不要导入任何东西，不要运行 import.mjs / attach-workspaces.mjs。
+   装插件和导会话是两件事：装完在设置页里勾选导入即可，界面与命令行共用
+   lib/import-core.mjs 同一条管线，结果一致。
 
-6. 告诉我如何重启 DSH（dsh web 或桌面端），以及重启后该刷新页面。
+6. 完全退出 DSH 再启动（托盘里也退掉），刷新页面。客户端改动不重启不生效。
 
-全程不要修改我的 WorkBuddy 原始数据，只读不写。遇到任何一步失败就停下来问我。
+7. 验收，把结果报给我：
+   - 设置 → 左侧导航出现「WorkBuddy 导入」这一行，图标是箭头进门（不是齿轮）
+   - 点进去有三个标签：待导入 / 已导入 / 回收站
+   - 待导入栏列出了本机 WorkBuddy 的会话
+   若导航里没有这一行，把 DSH 启动日志 / 控制台报错贴给我，
+   不要去改 DSH 自带的文件。
+
+全程不要修改我的 WorkBuddy 原始数据，只读不写。
 ```
 
-**完成。** 重启 DSH 并刷新页面后，会话列表里就会出现这些会话，
-按它们原本所在的项目目录分组。
+### 装完的验收（三条都要满足）
+
+1. **完全退出 DSH 再启动**（托盘里也退掉），不是只刷新页面 —— 客户端改动不重启不生效
+2. 设置 → 左侧导航出现「**WorkBuddy 导入**」这一行，图标是**箭头进门**而不是齿轮
+   （齿轮是「通用设置」那一枚，外壳按分区 id 配图标，认不出的 id 会回落成它）
+3. 点进去是三个标签 **待导入 / 已导入 / 回收站**
+
+**然后怎么用**：在「待导入」栏勾选 → 「导入所选」→ 自动归到原工作区分组 → 重启后出现在
+会话列表里。全程不用命令行。
 
 ---
 
@@ -182,22 +215,37 @@ WorkBuddy 的删除是**软删除**：只写 `sessions.deleted_at`，jsonl 原�
 `/__dsh-import-workbuddy/*`，与命令行共用 `lib/import-core.mjs` 同一条管线，
 所以界面和终端不会走出两种结果。
 
-### 装成插件
+### 手动装成插件（不想交给 AI 就照这个做）
 
-在 DSH profile 目录（`~/.dsh/profiles/desktop/`）里：
+在 **DSH profile 目录**里操作 —— Windows 是 `C:\Users\<你>\.dsh\profiles\desktop`，
+macOS/Linux 是 `~/.dsh/profiles/desktop`：
 
 ```bash
-# 1) 依赖指向本地 vendor 副本（避免市场更新覆盖掉你的修改）
+# 0) 源码放进 vendor —— vendor 里的副本不会被市场更新覆盖掉
+cd vendor
+git clone https://github.com/yuchuan000/dsh-import-workbuddy.git
+cd ..
+
+# 1) 依赖指向 vendor 副本
 npm pkg set dependencies.dsh-import-workbuddy=file:./vendor/dsh-import-workbuddy
 
-# 2) 加进 bundle 列表
-npm pkg set 'dsh.profile.bundles[5]=dsh-import-workbuddy'
+# 2) 加进 bundle 列表。索引不要照抄：先读 package.json 里 dsh.profile.bundles
+#    的长度，用末尾那个空位（本机现在是 6，你的机器可能是别的数）
+npm pkg set 'dsh.profile.bundles[6]=dsh-import-workbuddy'
 
-# 3) 把 src/ lib/ 等文件放到 vendor/dsh-import-workbuddy/ 下，并链接进 node_modules
+# 3) 链接进 node_modules
+#    Windows：
 mklink /J node_modules\dsh-import-workbuddy vendor\dsh-import-workbuddy
+#    macOS / Linux：
+ln -sfn ../vendor/dsh-import-workbuddy node_modules/dsh-import-workbuddy
 ```
 
-**重启 DSH** 生效，设置里就会出现「WorkBuddy 导入」这一页。
+**重启 DSH**（完全退出再启动，不是刷新页面）后，设置 → 左侧导航出现
+「WorkBuddy 导入」这一行，图标是箭头进门。
+
+> 只 `git clone` 仓库**不会**有界面 —— 那只提供 `import.mjs` 等命令行脚本。
+> 插件必须落进 `vendor/` + `node_modules/` 并写进 `dsh.profile.bundles` 才会在
+> 设置里出现。
 
 ---
 
@@ -226,7 +274,9 @@ WorkBuddy 的聊天记录存在本地，但**格式和 DSH 不兼容**，直接�
 - 已安装 **DSH**（`dsh web` 或 DSH 桌面端）
 - 本机有 **WorkBuddy** 的会话数据
 
-## 手动安装
+## 命令行模式（可选）
+
+装成插件后这一节用不上。这里是**不装插件、只在终端里导一次**的用法。
 
 ```bash
 git clone https://github.com/yuchuan000/dsh-import-workbuddy.git
@@ -234,6 +284,10 @@ cd dsh-import-workbuddy
 ```
 
 无需 `npm install` —— 本项目**零运行时依赖**，只用 Node 内置模块。
+
+> ⚠️ 这条路径**没有可视化页面**：只有 `import.mjs` / `sync-back.mjs` /
+> `attach-workspaces.mjs` 三个脚本，会要求你点名要导哪些会话。
+> 想在 DSH 设置里看到面板，按上面的「快速安装」装成插件。
 
 ## 用法
 
