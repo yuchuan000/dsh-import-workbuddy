@@ -35,94 +35,52 @@ DSH ($DSH_HOME/sessions)  →  重启后出现在会话列表
 > 把下面整段复制给任意一个能读写文件的 AI Agent（DSH / Claude Code / Codex / Cursor 等），
 > 它会自己把插件装好。
 >
-> ⚠️ **判错信号**：如果对方反过来问你「要导入哪些会话 / 要导哪几个 id」，
-> 说明它走成了**命令行模式** —— 只 `git clone` 了仓库、或只跑 `node import.mjs`，
-> 那是**一次性导入**，DSH 里**不会出现任何设置页**。
-> 插件必须落进 profile 的 `vendor/` + `node_modules/`，并写进 `dsh.profile.bundles`。
-> 遇到这种情况，把下面这段整段再贴一遍。
+> ⚠️ **判错信号**：对方要是反过来问你「要导入哪些会话 / 要导哪几个 id」，就是走成了
+> 命令行模式（`node import.mjs`），那样 DSH 里不会出现设置页 —— 把下面这段再贴一遍。
 
 ```text
-请帮我在 DeepSeek Harness (DSH) 里安装插件 dsh-import-workbuddy。
-目标是【DSH 设置里多出一页可视化导入面板】，不是用命令行导会话。
-按下面做。除了「装到哪个 profile」需要我回答，其余一律自己判断执行，
-不要停下来等回复；每步走了哪个分支、命令输出是什么，写进最后的报告。
+帮我在 DSH 里装插件 dsh-import-workbuddy
+（仓库 https://github.com/yuchuan000/dsh-import-workbuddy，作用是把 WorkBuddy 的
+会话导入 DSH）。装完要在 **DSH 设置里多出「WorkBuddy 导入」这一页**，不是用命令行
+导会话 —— 不要运行 import.mjs / attach-workspaces.mjs。
 
-0. 前置检查
-   - node --version 需要 >= 22.19（DSH 需要 node:sqlite 与 zstd）
-   - 找到 DSH 的 profile 目录：
-       Windows  C:\Users\<用户名>\.dsh\profiles\desktop
-       macOS/Linux  ~/.dsh/profiles/desktop
-     注意 Windows 下 Node 的 process.env.HOME 是空的，别用 HOME 去拼路径。
-     该目录里应当有 package.json、vendor/、node_modules/。
-     如果 profiles/ 下不止一个目录、或 desktop 里没有 vendor/，先把
-     ~/.dsh/profiles/ 下的内容列给我看，不要猜。
-   - 告诉我你找到的实际路径，以及 DSH 是桌面端还是 dsh web。
+除了「装到哪个 profile」别问我，自己判断执行。做完只回我一句：装好了（附 commit 号），
+还是卡在哪一步。
 
-1. 取源码放进 vendor（vendor 里的副本不会被市场更新覆盖掉）。
-   按 <profile>/vendor/dsh-import-workbuddy 的实际情况走，不要问我：
-   a) 不存在 → cd <profile 目录>/vendor && git clone https://github.com/yuchuan000/dsh-import-workbuddy.git
-   b) 存在且有 .git → git pull --ff-only
-      （拉不动就 git fetch --depth 1 origin main && git reset --hard origin/main）
-   c) 存在但**没有 .git**（zip 解压 / 别的机器同步过来 / 卸载后残留，都很常见）
-      → 就地接管，不要删目录、也不要 clone 到非空目录
-      （那会报 destination path already exists）：
-        cd <profile 目录>/vendor/dsh-import-workbuddy
-        git init -q
-        git remote add origin https://github.com/yuchuan000/dsh-import-workbuddy.git
-        git fetch --depth 1 origin main
-        git checkout -f -B main FETCH_HEAD
-   d) 版本校验：git log -1 --format='%h %s' 的前 7 位必须等于
-      git ls-remote https://github.com/yuchuan000/dsh-import-workbuddy.git HEAD 的前 7 位；
-      不等就回本步重做，最多两次。
-   确认 vendor/dsh-import-workbuddy/ 下有：package.json、src/index.js、
-   src/client.js、lib/*.mjs、cordis.patch.yml。
+1. profile 目录：Windows 是 C:\Users\<用户名>\.dsh\profiles\desktop，
+   macOS/Linux 是 ~/.dsh/profiles/desktop
+   （Windows 下 process.env.HOME 是空的，别拿它拼路径）。node 需要 >= 22.19。
+   只有多个 profile 都带 vendor/ 时才问我装哪个。
 
-2. 在 profile 目录里注册依赖（注意是 profile 目录，不是 vendor 里）
-   cd <profile 目录>
+2. 源码放进 <profile>/vendor/dsh-import-workbuddy，三种情况自己判断：
+   - 目录不存在：cd <profile>/vendor && git clone https://github.com/yuchuan000/dsh-import-workbuddy.git
+   - 有 .git：git -C <该路径> pull --ff-only（拉不动就 fetch + reset --hard origin/main）
+   - 没有 .git：cd <该路径> && git init -q && git remote add origin https://github.com/yuchuan000/dsh-import-workbuddy.git && git fetch --depth 1 origin main && git checkout -f -B main FETCH_HEAD
+   不要删这个目录，也不要 clone 到非空目录（那会报 destination path already exists）。
+
+3. 在 <profile>/package.json 里确保两处（没有就加，有了别重复）：
    npm pkg set dependencies.dsh-import-workbuddy=file:./vendor/dsh-import-workbuddy
+   dsh.profile.bundles 末尾追加 "dsh-import-workbuddy"（先读数组长度，别照抄索引）
 
-3. 写进 bundle 列表 —— 索引不要照抄，先读现成的
-   先读 package.json 里的 dsh.profile.bundles（是个数组，长度因机器而异），
-   把 "dsh-import-workbuddy" 追加到末尾；已经有了就跳过，别写重复项。
-   例：当前数组长度是 6，就执行
-     npm pkg set 'dsh.profile.bundles[6]=dsh-import-workbuddy'
+4. 让 DSH 加载到新代码（不做这步会跑旧版）：
+   - node_modules/dsh-import-workbuddy 不存在 →
+     Windows：mklink /J node_modules\dsh-import-workbuddy vendor\dsh-import-workbuddy
+     macOS/Linux：ln -sfn ../vendor/dsh-import-workbuddy node_modules/dsh-import-workbuddy
+   - 已存在 → 把 vendor 的 src/*.js 覆盖进去（Windows copy /Y，macOS/Linux cp -f），
+     别先删再建；校验两处 src/client.js 的 hash 一致
 
-4. 让 node_modules 能找到它
-   Windows：  mklink /J node_modules\dsh-import-workbuddy vendor\dsh-import-workbuddy
-   macOS/Linux：ln -s ../vendor/dsh-import-workbuddy node_modules/dsh-import-workbuddy
-   如果 node_modules/dsh-import-workbuddy 已经存在，先确认它指向的是不是
-   vendor 下这份副本；不是就删掉重建。
-   【已装过要更新时】先在第 1 步 git pull 拿到新代码，再看这里：
-   如果是 `->` 链接，pull 完即生效；如果它是**真实目录**（pnpm 建的硬链接副本，
-   与 vendor 的文件 inode 相同），git 更新 vendor 会写出新 inode、链接断开，
-   还得把 src/*.js **覆盖**进 node_modules（cp -f / copy /Y，不要先删再建），
-   否则 DSH 加载的仍是旧代码。
+5. 最后提醒我：完全退出 DSH 再启动（只刷新页面不够，托盘里也要退掉）。
+   装成功的标志：设置里出现「WorkBuddy 导入」这一页，图标是箭头进门，
+   点进去有三个标签：待导入 / 已导入 / 回收站。
 
-5. 【重要】这一步不要导入任何东西，不要运行 import.mjs / attach-workspaces.mjs。
-   装插件和导会话是两件事：装完在设置页里勾选导入即可，界面与命令行共用
-   lib/import-core.mjs 同一条管线，结果一致。
-
-6. 完全退出 DSH 再启动（托盘里也退掉），刷新页面。客户端改动不重启不生效。
-
-7. 验收，把结果报给我：
-   - 设置 → 左侧导航出现「WorkBuddy 导入」这一行，图标是箭头进门（不是齿轮）
-   - 点进去有三个标签：待导入 / 已导入 / 回收站
-   - 待导入栏列出了本机 WorkBuddy 的会话
-   若导航里没有这一行，把 DSH 启动日志 / 控制台报错贴给我，
-   不要去改 DSH 自带的文件。
-
-全程不要修改我的 WorkBuddy 原始数据，只读不写。
+不要动我的其他依赖和配置，也不要改我的 WorkBuddy 原始数据。
 ```
 
-### 装完的验收（三条都要满足）
+### 装完看一眼
 
-1. **完全退出 DSH 再启动**（托盘里也退掉），不是只刷新页面 —— 客户端改动不重启不生效
-2. 设置 → 左侧导航出现「**WorkBuddy 导入**」这一行，图标是**箭头进门**而不是齿轮
-   （齿轮是「通用设置」那一枚，外壳按分区 id 配图标，认不出的 id 会回落成它）
-3. 点进去是三个标签 **待导入 / 已导入 / 回收站**
-
-**然后怎么用**：在「待导入」栏勾选 → 「导入所选」→ 自动归到原工作区分组 → 重启后出现在
-会话列表里。全程不用命令行。
+重启后设置里出现「**WorkBuddy 导入**」（图标是箭头进门，不是齿轮），点进去三个标签
+**待导入 / 已导入 / 回收站** —— 就是装好了。
+怎么用：在「待导入」栏勾选 → 「导入所选」→ 自动归到原工作区分组，全程不用命令行。
 
 ---
 
