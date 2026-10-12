@@ -55,11 +55,20 @@ window.__ModuleLoader__.load({
       'settings.tabCount': '共 {n} 条',
       'settings.config': '配置',
       'settings.configTitle': '导入设置',
-      'settings.configDesc': '这里的改动立即生效，关掉即生效完毕。',
+      // The dialog's own explanation, behind the "?" under its title. It used to
+      // be the description paragraph; nothing here is read without asking.
+      'settings.configAbout': '这里的改动立即生效，关掉即生效完毕。',
       'settings.close': '关闭',
-      'settings.desc': '把本机 WorkBuddy（腾讯 CodeBuddy）的会话导入 DSH，成为可继续对话的原生会话。勾选要导入的内容，重复导入会自动跳过。',
-      'settings.importedHint': '已经在 DSH 里的会话。勾选可以把 DSH 这边新产生的对话回写进 WorkBuddy 原会话；接管过来的还可以还原回去。',
-      'settings.recycleHint': '从待导入里划掉的会话。恢复后回到待导入列表；WorkBuddy 里的轨迹文件从头到尾没有被改动过。',
+      'settings.tip': '说明',
+      // One explanation per tab, behind that tab's own "?" — the sentence used to
+      // be a paragraph under the strip, where it answered "which of the three am
+      // I looking at" only after you had already crossed over.
+      'settings.pendingTip1': '把本机 WorkBuddy（腾讯 CodeBuddy）的会话导入 DSH，成为可继续对话的原生会话。',
+      'settings.pendingTip2': '勾选要导入的内容，重复导入会自动跳过。',
+      'settings.importedTip1': '已经在 DSH 里的会话。',
+      'settings.importedTip2': '勾选可以把 DSH 这边新产生的对话回写进 WorkBuddy 原会话；接管过来的还可以还原回去。',
+      'settings.recycleTip1': '从待导入里划掉的会话。',
+      'settings.recycleTip2': '恢复后回到待导入列表；WorkBuddy 里的轨迹文件从头到尾没有被改动过。',
       'settings.plan': '导入方式：{mode}｜工具调用：{tools}',
       'settings.planTools.keep': '保留',
       'settings.planTools.text': '转为纯文本',
@@ -87,9 +96,11 @@ window.__ModuleLoader__.load({
       'settings.colTitle': '会话',
       'settings.options': '导入选项',
       'settings.noTools': '丢弃工具调用',
-      'settings.noToolsHint': '只保留对话文本，适合只想看聊天内容的场景。',
+      'settings.noToolsTip1': '只保留对话文本。',
+      'settings.noToolsTip2': '适合只想看聊天内容的场景。',
       'settings.toolsAsText': '工具调用转纯文本',
-      'settings.toolsAsTextHint': '工具调用以文本形式保留在轨迹里，不生成工具卡片。',
+      'settings.toolsAsTextTip1': '工具调用以文本形式保留在轨迹里。',
+      'settings.toolsAsTextTip2': '不生成工具卡片。',
       'settings.retry': '重试',
       'settings.result': '完成：新导入 {imported}，已存在跳过 {existing}，空会话 {empty}，失败 {failed}',
       'settings.resultFailures': '部分失败：{failures}',
@@ -120,13 +131,19 @@ window.__ModuleLoader__.load({
       'settings.groupUngrouped': '未分组',
 
       // 归属模式
+      // The label carries the one fact that must not be missed — copy keeps the
+      // original, adopt moves it over — and the rest waits behind the "?" on the
+      // heading, showing the mode that is currently selected.
       'settings.mode': '归属方式',
       'settings.mode.copy': '拷贝（保留原会话）',
-      'settings.mode.copyHint': '只读 WorkBuddy 的会话，在 DSH 里写一份新的。源文件一个字节都不动，两边从此分叉：WorkBuddy 那份停在导入那一刻。',
+      'settings.mode.copyTip1': '只读 WorkBuddy 的会话，在 DSH 里写一份新的。',
+      'settings.mode.copyTip2': '源文件一个字节都不动，两边从此分叉：WorkBuddy 那份停在导入那一刻。',
       'settings.mode.adopt': '接管（原会话搬过来）',
-      'settings.mode.adoptHint': '导入后把 WorkBuddy 的轨迹文件归档到 DSH，并在它的注册表里打上删除标记，DSH 成为唯一一份。可逆：归档文件保留着，随时可以还原。',
+      'settings.mode.adoptTip1': '导入后把 WorkBuddy 的轨迹文件归档到 DSH，并在它的注册表里打上删除标记，DSH 成为唯一一份。',
+      'settings.mode.adoptTip2': '可逆：归档文件保留着，随时可以还原。',
       'settings.mode.sync': '同步（两边都能接着看）',
-      'settings.mode.syncHint': '保留 WorkBuddy 原会话，DSH 里后续新产生的对话可以回写进去，两边内容保持一致。回写是有损的：推理过程不回写，只回写正文与工具调用。',
+      'settings.mode.syncTip1': '保留 WorkBuddy 原会话，DSH 里后续新产生的对话可以回写进去，两边内容保持一致。',
+      'settings.mode.syncTip2': '回写是有损的：推理过程不回写，只回写正文与工具调用。',
       'settings.syncButton': '回写所选（{n}）',
       'settings.syncing': '正在回写…',
       'settings.syncedOne': '已回写 {n} 个会话，新增 {lines} 行',
@@ -151,11 +168,15 @@ window.__ModuleLoader__.load({
       'settings.tabCount': '{n} entries',
       'settings.config': 'Settings',
       'settings.configTitle': 'Import settings',
-      'settings.configDesc': 'Every change here applies immediately — just close this when you are done.',
+      'settings.configAbout': 'Every change here applies immediately — just close this when you are done.',
       'settings.close': 'Close',
-      'settings.desc': 'Import local WorkBuddy (Tencent CodeBuddy) conversations into DSH as native, resumable sessions. Tick what you want; re-importing skips automatically.',
-      'settings.importedHint': 'Conversations already in DSH. Tick one to write later turns in DSH back to the WorkBuddy original; anything adopted can also be put back.',
-      'settings.recycleHint': 'Conversations you swept out of the pending list. Restoring puts them back there; the WorkBuddy transcript was never touched either way.',
+      'settings.tip': 'Explanation',
+      'settings.pendingTip1': 'Import local WorkBuddy (Tencent CodeBuddy) conversations into DSH as native, resumable sessions.',
+      'settings.pendingTip2': 'Tick what you want; re-importing skips automatically.',
+      'settings.importedTip1': 'Conversations already in DSH.',
+      'settings.importedTip2': 'Tick one to write later turns in DSH back to the WorkBuddy original; anything adopted can also be put back.',
+      'settings.recycleTip1': 'Conversations you swept out of the pending list.',
+      'settings.recycleTip2': 'Restoring puts them back there; the WorkBuddy transcript was never touched either way.',
       'settings.plan': 'Import as: {mode} · Tool calls: {tools}',
       'settings.planTools.keep': 'kept',
       'settings.planTools.text': 'as plain text',
@@ -183,9 +204,11 @@ window.__ModuleLoader__.load({
       'settings.colTitle': 'Conversation',
       'settings.options': 'Import options',
       'settings.noTools': 'Drop tool calls',
-      'settings.noToolsHint': 'Keep dialogue text only — for when you just want the chat content.',
+      'settings.noToolsTip1': 'Keep dialogue text only.',
+      'settings.noToolsTip2': 'For when you just want the chat content.',
       'settings.toolsAsText': 'Tool calls as plain text',
-      'settings.toolsAsTextHint': 'Tool calls stay in the transcript as text, with no tool cards.',
+      'settings.toolsAsTextTip1': 'Tool calls stay in the transcript as text.',
+      'settings.toolsAsTextTip2': 'No tool cards are generated.',
       'settings.retry': 'Retry',
       'settings.result': 'Done: {imported} imported, {existing} already present, {empty} empty, {failed} failed',
       'settings.resultFailures': 'Some failed: {failures}',
@@ -214,11 +237,14 @@ window.__ModuleLoader__.load({
 
       'settings.mode': 'Ownership',
       'settings.mode.copy': 'Copy (keep the original)',
-      'settings.mode.copyHint': 'Reads the WorkBuddy conversation and writes a new one in DSH. The source file is untouched, and the two histories diverge from this moment on.',
+      'settings.mode.copyTip1': 'Reads the WorkBuddy conversation and writes a new one in DSH.',
+      'settings.mode.copyTip2': 'The source file is untouched, and the two histories diverge from this moment on.',
       'settings.mode.adopt': 'Adopt (move it over)',
-      'settings.mode.adoptHint': 'After importing, the WorkBuddy transcript is archived into DSH and marked deleted in its registry, so DSH holds the only copy. Reversible: the archived file is kept and can be put back.',
+      'settings.mode.adoptTip1': 'After importing, the WorkBuddy transcript is archived into DSH and marked deleted in its registry, so DSH holds the only copy.',
+      'settings.mode.adoptTip2': 'Reversible: the archived file is kept and can be put back.',
       'settings.mode.sync': 'Sync (keep both readable)',
-      'settings.mode.syncHint': 'Keeps the WorkBuddy original, and later turns made in DSH can be written back to it so both sides stay in step. Writing back is lossy: reasoning is dropped, only message text and tool calls come across.',
+      'settings.mode.syncTip1': 'Keeps the WorkBuddy original, and later turns made in DSH can be written back to it so both sides stay in step.',
+      'settings.mode.syncTip2': 'Writing back is lossy: reasoning is dropped, only message text and tool calls come across.',
       'settings.syncButton': 'Sync back ({n})',
       'settings.syncing': 'Syncing…',
       'settings.syncedOne': 'Synced {n} conversation(s), {lines} new line(s)',
@@ -628,11 +654,22 @@ window.__ModuleLoader__.load({
     }
     const tabBaseStyle = {
       display: 'inline-flex', alignItems: 'center', gap: 6,
-      padding: '6px 10px', marginBottom: -1, borderRadius: '6px 6px 0 0',
+      padding: '6px 10px', borderRadius: '6px 6px 0 0',
       border: 'none', borderBottom: '2px solid transparent',
       background: 'transparent', cursor: 'pointer',
       fontSize: 13, lineHeight: '20px',
       color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
+    }
+    // A tab and its "?" on one line. The negative bottom margin moved here from
+    // the tab itself: the tab's underline has to sit 1px into the strip's own
+    // border, and the wrapper is now what the flex line measures.
+    // `position: relative` is what the tab's "?" hangs its bubble off. Without
+    // it the bubble is placed against the nearest positioned ancestor further
+    // up — measured in the real layout, that put it 116px below the viewport
+    // rather than under the tab it describes.
+    const tabItemStyle = {
+      position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 4,
+      marginBottom: -1,
     }
     /** The open tab: same shape as the idle one, marked rather than disabled. */
     const tabOnStyle = {
@@ -651,12 +688,77 @@ window.__ModuleLoader__.load({
     // --- dialog rows ---------------------------------------------------------------
 
     const settingLabelStyle = { display: 'block', fontSize: 13, lineHeight: '20px' }
-    const settingHintStyle = {
-      display: 'block', fontSize: 12, lineHeight: '18px', marginTop: 2,
-      color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
+    // A title and its "?" on one line. It is also the bubble's positioning
+    // context, and that is deliberate: the settings dialog is 380px wide with
+    // `overflow: hidden`, so a bubble hung off the right of a long title would
+    // be clipped. Anchored to the line instead, the bubble starts at the
+    // column's left edge and its fixed width keeps it inside by construction.
+    const settingLabelRowStyle = {
+      position: 'relative',
+      display: 'flex', alignItems: 'center', gap: 6, minWidth: 0,
     }
     const settingRowStyle = {
       display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 0',
+    }
+
+    // --- the "?" tip -------------------------------------------------------------
+    //
+    // Explanations used to sit under their title as a paragraph — on the settings
+    // rows, on the tabs, and in the dialogs' description. In a 380px dialog they
+    // made every row three lines tall; on a page they put a wall of prose between
+    // the user and the first row. They hang off a "?" now, and the user asks.
+    //
+    // The bubble is the platform's own tooltip surface (`--dsw-alias-tooltip-bg`
+    // is a dark chip in both themes, which is why the text is the platform's
+    // white), lifted off the page with a border and a shadow.
+    const tipAnchorStyle = { display: 'inline-flex', flex: 'none' }
+    const tipChipStyle = {
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      width: 14, height: 14, borderRadius: '50%', flex: 'none',
+      fontSize: 10, lineHeight: '14px', fontWeight: 600,
+      border: '1px solid var(--dsw-alias-border-l4, rgba(128,128,128,.5))',
+      color: 'var(--dsw-alias-label-tertiary, #8a8a8e)',
+      cursor: 'help', userSelect: 'none',
+    }
+    const tipChipOnStyle = {
+      ...tipChipStyle,
+      borderColor: 'var(--dsw-alias-interactive-bg-primary, #3b82f6)',
+      color: 'var(--dsw-alias-interactive-bg-primary, #3b82f6)',
+    }
+    // The bubble opens *upward* by default: inside the 380px settings card the
+    // only thing that matters is clearing the card's top edge, and measured in
+    // that card's own layout every row bubble does. Below the last row there is
+    // far less room, so a bubble opening downward would be cut.
+    //
+    // Two anchors sit the other way round — the dialog's own caption, and a tab
+    // strip at the top of a page — where opening up would run into the card's
+    // header instead. Those pass `placement: 'down'`.
+    const tipBoxStyle = {
+      position: 'absolute', left: 0, bottom: '100%', zIndex: 30,
+      // A fixed 260px, not a percentage: a percentage resolves against the title
+      // line, so a long title squeezes the bubble into a narrow column and the
+      // text grows tall enough to run past the card's top edge.
+      width: 260, maxWidth: 'calc(100vw - 140px)',
+      padding: '8px 10px', borderRadius: 8,
+      background: 'var(--dsw-alias-tooltip-bg, #2c2c2e)',
+      color: 'var(--dsw-static-neutral-bluish-00, #fff)',
+      border: '1px solid var(--dsw-alias-border-l4, rgba(255,255,255,.18))',
+      boxShadow: '0 8px 24px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.18)',
+      fontSize: 12, lineHeight: '18px', fontWeight: 400,
+      textAlign: 'left', whiteSpace: 'normal',
+      cursor: 'default',
+    }
+    const tipBoxDownStyle = { ...tipBoxStyle, top: '100%', bottom: 'auto' }
+    const tipListStyle = {
+      margin: 0, padding: '0 0 0 16px', listStyle: 'disc',
+    }
+    const tipItemStyle = { margin: '2px 0' }
+    // The settings dialog's own explanation: a caption-shaped line holding only
+    // a "?" — the sentence that used to be the description paragraph sits in it.
+    const aboutRowStyle = {
+      position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 6,
+      fontSize: 12, lineHeight: '18px',
+      color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
     }
     const separatorStyle = {
       height: 1, margin: '12px 0 4px',
@@ -712,8 +814,74 @@ window.__ModuleLoader__.load({
       } catch { return '' }
     }
 
+    /**
+     * The "?" that sits next to a setting's title, holding its explanation.
+     *
+     * Hover, not click: reading a row's reasoning is a glance, not a task. The
+     * chip lives inside a `<label>`, where a click is forwarded to the checkbox,
+     * so it stops the event rather than letting a look at the text flip a switch.
+     * Focus does the same as a hover, for the keyboard.
+     *
+     * `placement` chooses which way the bubble opens — `up` for a settings row,
+     * `down` for an anchor with nothing above it (see `tipBoxStyle`). `label`
+     * only widens the accessible name, so three chips on one tab strip do not
+     * all announce themselves as "说明".
+     */
+    function InfoTip(props) {
+      const __ = props.t || t
+      const [open, setOpen] = useState(false)
+      const points = Array.isArray(props.items)
+        ? props.items.filter((item) => typeof item === 'string' && item.length > 0)
+        : []
+      if (points.length === 0) return null
+      const down = props.placement === 'down'
+      const described = props.label ? `${__('settings.tip')}：${props.label}` : __('settings.tip')
+      return React.createElement('span', {
+        style: tipAnchorStyle,
+        onMouseEnter: () => setOpen(true),
+        onMouseLeave: () => setOpen(false),
+        onFocus: () => setOpen(true),
+        onBlur: () => setOpen(false),
+      }, [
+        React.createElement('span', {
+          key: 'chip',
+          tabIndex: 0,
+          role: 'button',
+          style: open ? tipChipOnStyle : tipChipStyle,
+          'aria-label': described,
+          'aria-expanded': open,
+          onClick: (event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            setOpen((value) => !value)
+          },
+          onMouseDown: (event) => event.preventDefault(),
+        }, '?'),
+        open
+          ? React.createElement('span', {
+              key: 'tip',
+              role: 'tooltip',
+              style: down ? tipBoxDownStyle : tipBoxStyle,
+              // Selecting text in the bubble must not reach the <label> around
+              // the row, or a copy would flip the switch it explains.
+              onClick: (event) => { event.preventDefault(); event.stopPropagation() },
+            }, React.createElement('ul', { key: 'points', style: tipListStyle },
+              points.map((point, index) => React.createElement('li', {
+                key: `point:${index}`, style: tipItemStyle,
+              }, point))))
+          : null,
+      ])
+    }
+
+    /**
+     * One option row: a title with its "?" on the same line, and a checkbox.
+     *
+     * `tip` carries the explanation; nothing sits under the title any more, so
+     * the two options read as two lines rather than a paragraph each.
+     */
     function OptionRow(props) {
-      const { label, hint, checked, disabled, onChange } = props
+      const __ = props.t || t
+      const { label, tip, checked, disabled, onChange } = props
       return React.createElement('label', {
         style: {
           display: 'flex', alignItems: 'flex-start', gap: 10,
@@ -725,17 +893,15 @@ window.__ModuleLoader__.load({
           onChange: (event) => onChange(event.target.checked),
           style: { marginTop: 2, flex: 'none' },
         }),
-        React.createElement('span', { key: 'text', style: { display: 'block' } }, [
-          React.createElement('span', {
-            key: 'label', style: { display: 'block', fontSize: 13, lineHeight: '20px' },
-          }, label),
-          React.createElement('span', {
-            key: 'hint',
-            style: {
-              display: 'block', fontSize: 12, lineHeight: '18px', marginTop: 2,
-              color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
-            },
-          }, hint),
+        React.createElement('span', { key: 'text', style: { display: 'block', minWidth: 0 } }, [
+          React.createElement('span', { key: 'title', style: settingLabelRowStyle }, [
+            React.createElement('span', { key: 'label', style: settingLabelStyle }, label),
+            // The option's own title goes into the chip's label: the dialog's
+            // about row has a "?" with no title of its own, and two chips both
+            // announced as just "说明" cannot be told apart — by a screen
+            // reader, or by a test trying to hover one of them.
+            React.createElement(InfoTip, { key: 'tip', t: __, label, items: tip }),
+          ]),
         ]),
       ])
     }
@@ -966,13 +1132,33 @@ window.__ModuleLoader__.load({
      * the first read lands, so unlike the session-recycle strip there is nothing
      * to fetch here; they are simply withheld while that read is in flight, so
      * the strip never claims a zero it is about to contradict.
+     *
+     * Each tab carries its own "?" on the label's right. The explanation used to
+     * be a paragraph under the strip, where it answered "which of the three am I
+     * looking at" only *after* you had already crossed over; on the tab it
+     * answers before, and the strip gets its line back.
      */
     function ImportTabs(props) {
       const __ = props.__ || t
       const tabs = [
-        { id: TAB_PENDING, label: __('settings.tabPending'), count: props.pending },
-        { id: TAB_IMPORTED, label: __('settings.tabImported'), count: props.imported },
-        { id: TAB_RECYCLE, label: __('settings.tabRecycle'), count: props.recycled },
+        {
+          id: TAB_PENDING,
+          label: __('settings.tabPending'),
+          count: props.pending,
+          tip: [__('settings.pendingTip1'), __('settings.pendingTip2')],
+        },
+        {
+          id: TAB_IMPORTED,
+          label: __('settings.tabImported'),
+          count: props.imported,
+          tip: [__('settings.importedTip1'), __('settings.importedTip2')],
+        },
+        {
+          id: TAB_RECYCLE,
+          label: __('settings.tabRecycle'),
+          count: props.recycled,
+          tip: [__('settings.recycleTip1'), __('settings.recycleTip2')],
+        },
       ]
       return React.createElement('div', { style: tabStripStyle }, [
         React.createElement('div', {
@@ -982,21 +1168,29 @@ window.__ModuleLoader__.load({
           style: tabListStyle,
         }, tabs.map(tab => {
           const on = props.tab === tab.id
-          return React.createElement('button', {
-            key: tab.id,
-            type: 'button',
-            role: 'tab',
-            'data-tab': tab.id,
-            'aria-selected': on,
-            style: on ? tabOnStyle : tabBaseStyle,
-            onClick: () => props.onTab?.(tab.id),
-          }, [
-            React.createElement('span', { key: 'l' }, tab.label),
-            props.loading === true
-              ? null
-              : React.createElement('span', {
-                  key: 'n', style: tabBadgeStyle, title: __('settings.tabCount', { n: tab.count }),
-                }, String(tab.count)),
+          // The "?" is a *sibling* of the tab button, not a child: a button may
+          // not contain another button, and as a sibling a click on it cannot be
+          // mistaken for a request to switch tabs.
+          return React.createElement('span', { key: tab.id, style: tabItemStyle }, [
+            React.createElement('button', {
+              key: 'tab',
+              type: 'button',
+              role: 'tab',
+              'data-tab': tab.id,
+              'aria-selected': on,
+              style: on ? tabOnStyle : tabBaseStyle,
+              onClick: () => props.onTab?.(tab.id),
+            }, [
+              React.createElement('span', { key: 'l' }, tab.label),
+              props.loading === true
+                ? null
+                : React.createElement('span', {
+                    key: 'n', style: tabBadgeStyle, title: __('settings.tabCount', { n: tab.count }),
+                  }, String(tab.count)),
+            ]),
+            React.createElement(InfoTip, {
+              key: 'tip', t: __, placement: 'down', label: tab.label, items: tab.tip,
+            }),
           ])
         })),
         React.createElement('button', {
@@ -1032,47 +1226,72 @@ window.__ModuleLoader__.load({
       if (!configState.open) return null
 
       const mode = importOptions.mode
+      const modeLabel = __('settings.mode')
+      // The dialog's own explanation. It used to be the description paragraph —
+      // prose in front of the first control; now it is a caption holding a "?",
+      // like every row's own.
+      //
+      // It is not hung off the title itself: `Modal` copies `title` into the
+      // dialog's `aria-label`, so a node there would announce the dialog as
+      // "[object Object]" to a screen reader.
+      const about = React.createElement('span', { key: 'about', style: aboutRowStyle }, [
+        React.createElement('span', { key: 'l' }, __('settings.tip')),
+        React.createElement(InfoTip, {
+          key: 'tip', t: __, placement: 'down', items: [__('settings.configAbout')],
+        }),
+      ])
+
       return React.createElement(Modal, {
         open: true,
         onClose: () => setConfigOpen(false),
         title: __('settings.configTitle'),
         closeLabel: __('settings.close'),
-        description: __('settings.configDesc'),
+        description: about,
         footer: [React.createElement('button', {
           key: 'close', type: 'button', style: primaryBtnStyle, onClick: () => setConfigOpen(false),
         }, __('settings.close'))],
       }, [
-        React.createElement('div', {
-          key: 'mode-head', style: { ...settingLabelStyle, fontWeight: 600, marginBottom: 2 },
-        }, __('settings.mode')),
+        // The heading carries the "?" for the mode that is selected right now,
+        // so the detail follows the choice instead of sitting under the control
+        // as a paragraph. What may not be missed is in the option labels
+        // themselves — copy keeps the original, adopt moves it over.
+        React.createElement('div', { key: 'mode-head', style: { ...settingLabelRowStyle, marginBottom: 2 } }, [
+          React.createElement('span', {
+            key: 'l', style: { ...settingLabelStyle, fontWeight: 600 },
+          }, modeLabel),
+          React.createElement(InfoTip, {
+            key: 'tip',
+            t: __,
+            label: modeLabel,
+            items: [`settings.mode.${mode}Tip1`, `settings.mode.${mode}Tip2`].map(key => __(key)),
+          }),
+        ]),
         React.createElement('select', {
           key: 'mode-select',
           value: mode,
           style: selectStyle,
-          'aria-label': __('settings.mode'),
+          'aria-label': modeLabel,
           onChange: (event) => setOption('mode', event.target.value),
         }, [
           React.createElement('option', { key: 'copy', value: 'copy' }, __('settings.mode.copy')),
           React.createElement('option', { key: 'adopt', value: 'adopt' }, __('settings.mode.adopt')),
           React.createElement('option', { key: 'sync', value: 'sync' }, __('settings.mode.sync')),
         ]),
-        // 选中项的解释紧跟其后：三种模式的代价都不是一句话能说清的，而
-        // 「接管会搬走原文件」这种事必须在按按钮之前就看见。
-        React.createElement('div', { key: 'mode-hint', style: { ...metaStyle, marginTop: 6 } },
-          __(`settings.mode.${mode}Hint`)),
 
         React.createElement('div', { key: 'sep', style: separatorStyle }),
         React.createElement(OptionRow, {
           key: 'opt-notools',
           label: __('settings.noTools'),
-          hint: __('settings.noToolsHint'),
+          tip: [__('settings.noToolsTip1'), __('settings.noToolsTip2')],
+          t: __,
           checked: importOptions.noTools,
           onChange: (value) => setOption('noTools', value),
         }),
         React.createElement(OptionRow, {
           key: 'opt-asttext',
           label: __('settings.toolsAsText'),
-          hint: __('settings.toolsAsTextHint'),
+          tip: [__('settings.toolsAsTextTip1'), __('settings.toolsAsTextTip2')],
+          t: __,
           checked: importOptions.toolsAsText,
           onChange: (value) => setOption('toolsAsText', value),
         }),
@@ -1541,14 +1760,10 @@ window.__ModuleLoader__.load({
           __,
         }),
 
-        // Hint for the open tab. It is the first thing under the strip because
-        // it answers "which of the three am I looking at" before the rows do.
-        React.createElement('div', {
-          key: 'hint', style: { ...metaStyle, margin: '8px 0 0' },
-        }, tab === TAB_PENDING
-          ? __('settings.desc')
-          : tab === TAB_IMPORTED ? __('settings.importedHint') : __('settings.recycleHint')),
-
+        // No hint paragraph under the strip: each tab now carries its own "?" on
+        // the label, so the answer to "which of the three am I looking at" is
+        // available on the tabs themselves — and the strip gets its line back.
+        //
         // The policy is behind a button, so the one line that quotes it stays
         // on the page: without it the mode is invisible exactly while it is
         // being applied.

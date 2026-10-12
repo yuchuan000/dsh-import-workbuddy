@@ -238,6 +238,65 @@ const optionValuesOf = (node) => (node === undefined ? [] : collect(node)
   .filter(n => n.kind === 'host' && n.type === 'option')
   .map(n => n.props.value))
 
+// --- 「?」气泡 ---------------------------------------------------------------
+//
+// 解释性文字全都挂在这些问号上，所以测试必须能精确点到某一个：按 aria-label
+// 认，而不是按位置——位置会随版面变，aria-label 是给读屏用的，本来就该唯一。
+
+/** 悬浮/聚焦之后才存在的气泡。 */
+const tooltipOf = (node) => collect(node).find(n => n.kind === 'host' && n.props?.role === 'tooltip')
+
+/** chip 的 aria-label 前缀，带标题时是「说明：xxx」。 */
+const TIP_LABEL = '说明'
+
+/**
+ * 标题右侧那个「?」。
+ *
+ * `label` 省略时找的是没有附属标题的那一个（设置弹窗自己的说明行）。
+ */
+function tipChip(root, label) {
+  return collect(root).find(n => n.kind === 'host' && n.props?.role === 'button'
+    && (label === undefined
+      ? n.props?.['aria-label'] === TIP_LABEL
+      : n.props?.['aria-label'] === `${TIP_LABEL}：${label}`))
+}
+
+/** 气泡的容器（问号外两层）：定位上下文必须挂在它身上。 */
+function tipLine(root, chip) {
+  const anchor = collect(root).find(n => n.kind === 'host' && n.children?.includes(chip))
+  return collect(root).find(n => n.kind === 'host' && n.children?.includes(anchor))
+}
+
+/** 气泡的锚点：chip 的父元素，悬浮事件挂在它身上。 */
+function tipAnchor(root, label) {
+  const chip = tipChip(root, label)
+  if (chip === undefined) return undefined
+  return collect(root).find(n => n.kind === 'host' && n.children?.includes(chip))
+}
+
+/** 所有问号的锚点，用来在悬浮下一个之前把上一个收起来。 */
+function tipAnchors(root) {
+  return collect(root).filter(n => n.kind === 'host' && Array.isArray(n.children)
+    && n.children.some(c => c !== null && c !== undefined && c.kind === 'host'
+      && c.props?.role === 'button'
+      && typeof c.props?.['aria-label'] === 'string'
+      && c.props['aria-label'].startsWith(TIP_LABEL)))
+}
+
+/** 悬浮某个问号，返回展开后的气泡（在重渲后的新树里找）。 */
+async function hoverTip(view, root, label) {
+  // One pointer, one chip: leaving every other anchor first is what the mouse
+  // does on its way over. Skipping it leaves the previous bubble in the tree,
+  // and `tooltipOf` would hand back that one instead of the new one.
+  for (const anchor of tipAnchors(root)) anchor.props.onMouseLeave?.()
+  await view.settle()
+  const anchor = tipAnchor(view.tree(), label)
+  if (anchor === undefined) throw new Error(`没有找到「${label ?? '设置说明'}」的问号`)
+  anchor.props.onMouseEnter()
+  await view.settle()
+  return tooltipOf(view.tree())
+}
+
 /** 打开配置弹窗（页面上的「配置」按钮）。 */
 async function openConfig(view) { await click(view, button(view, '配置')) }
 /** 关掉配置弹窗（弹窗底部的「关闭」）。 */
@@ -280,9 +339,11 @@ function loadBundle() {
         // 真实 Toast 是 portal 宿主；这里用宿主元素接住同样的 props，
         // 好让断言能把横幅文案读回来。
         Toast: (props) => createElement('div', { 'data-toast': '1', ...props }),
-        // 真实 Modal 也是 portal 宿主，body 走 children、按钮走 footer；
-        // 两半都接住，测试才点得到配置弹窗里的控件。
-        Modal: (props) => createElement('div', { 'data-modal': props.title ?? '' }, [props.children, props.footer]),
+        // 真实 Modal 也是 portal 宿主：标题下方先渲 description，然后是 body
+        // 的 children 和 footer 的按钮。三段都接住，测试才点得到配置弹窗里的
+        // 控件，也才读得到挂在 description 上的说明问号。
+        Modal: (props) => createElement('div', { 'data-modal': props.title ?? '' },
+          [props.description, props.children, props.footer]),
       }
     }
     throw new Error(`unexpected require: ${id}`)
@@ -789,7 +850,7 @@ export async function run() {
 
   // --- 归属模式 ---------------------------------------------------------------
 
-  await checkAsync('配置弹窗：归属方式三选一，默认 copy，提示随选择变化', async () => {
+  await checkAsync('配置弹窗：归属方式三选一，默认 copy，说明随选择变化', async () => {
     globalThis.fetch = fakeFetch().impl
     try {
       const { view } = mountPage(loadBundle())
@@ -800,20 +861,91 @@ export async function run() {
       const values = optionValuesOf(box)
       if (values.join(',') !== 'copy,adopt,sync') throw new Error(`下拉选项: ${values.join(',')}`)
       if (box.props.value !== 'copy') throw new Error('默认应是 copy（与既有行为一致）')
-      if (!text(configModal(view)).includes('只读 WorkBuddy 的会话')) throw new Error('默认应显示 copy 的说明')
+
+      // 说明不再是下拉框下面那段话，而是标题右侧问号里的分点。
+      const about = text(configModal(view))
+      if (about.includes('只读 WorkBuddy 的会话')) throw new Error(`说明不该常驻版面: ${about.slice(0, 300)}`)
+      const copyTip = await hoverTip(view, configModal(view), '归属方式')
+      if (!copyTip || !text(copyTip).includes('只读 WorkBuddy 的会话')) {
+        throw new Error(`默认应显示 copy 的说明: ${copyTip && text(copyTip)}`)
+      }
 
       await change(view, modalSelect(view), { value: 'adopt' })
-      const body = text(configModal(view))
-      if (!body.includes('归档到 DSH')) throw new Error(`切到 adopt 后应显示接管说明: ${body.slice(0, 300)}`)
-      if (body.includes('只读 WorkBuddy 的会话')) throw new Error('不应再显示 copy 的说明')
+      const adopted = await hoverTip(view, configModal(view), '归属方式')
+      if (!adopted || !text(adopted).includes('归档到 DSH')) {
+        throw new Error(`切到 adopt 后应显示接管说明: ${adopted && text(adopted)}`)
+      }
+      if (text(adopted).includes('只读 WorkBuddy 的会话')) throw new Error('不应再显示 copy 的说明')
 
       await change(view, modalSelect(view), { value: 'sync' })
-      if (!text(configModal(view)).includes('保留 WorkBuddy 原会话')) throw new Error('切到 sync 后应显示同步说明')
+      const synced = await hoverTip(view, configModal(view), '归属方式')
+      if (!synced || !text(synced).includes('保留 WorkBuddy 原会话')) {
+        throw new Error(`切到 sync 后应显示同步说明: ${synced && text(synced)}`)
+      }
 
       // 页面上那一行要把当下的选择说出来：弹窗关掉之后它只能靠这行。
       await closeConfig(view)
       if (!text(view.tree()).includes('导入方式：同步')) {
         throw new Error(`页面上应复述当前方式: ${text(view.tree()).slice(0, 300)}`)
+      }
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('配置弹窗：说明挂在标题下方的问号里，不再是段落', async () => {
+    globalThis.fetch = fakeFetch().impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await openConfig(view)
+
+      const chip = tipChip(configModal(view))
+      if (chip === undefined) throw new Error('设置弹窗应有自己的问号')
+      if (text(configModal(view)).includes('改动立即生效')) throw new Error('说明不该常驻版面')
+      if (tooltipOf(configModal(view)) !== undefined) throw new Error('没悬浮就展开了气泡')
+
+      const tip = await hoverTip(view, configModal(view))
+      if (!tip || !text(tip).includes('改动立即生效')) {
+        throw new Error(`悬浮后应说出「改动立即生效」: ${tip && text(tip)}`)
+      }
+      // 弹簧卡片只有 380px 宽且裁掉溢出：说明行在最上面，气泡必须向下开。
+      if (tip.props.style.top !== '100%') throw new Error('说明行的气泡要向下展开')
+      if (tip.props.style.bottom !== 'auto') throw new Error('向下展开时不该再压着 bottom')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('三个页签各带一个问号，说明不再占版面', async () => {
+    globalThis.fetch = fakeFetch().impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+
+      const page = text(view.tree())
+      for (const said of ['把本机 WorkBuddy', '已经在 DSH 里的会话', '从待导入里划掉的会话']) {
+        if (page.includes(said)) throw new Error(`页签说明不该常驻版面: ${said}`)
+      }
+
+      const cases = [['待导入', '把本机 WorkBuddy'], ['已导入', '已经在 DSH 里的会话'], ['回收站', '从待导入里划掉的会话']]
+      for (const [name, said] of cases) {
+        const chip = tipChip(view.tree(), name)
+        if (chip === undefined) throw new Error(`「${name}」页签右侧缺少问号`)
+        // 没有定位上下文，气泡会挂到更上层的祖先上 —— 实测会落到视口外面。
+        if (tipLine(view.tree(), chip).props.style.position !== 'relative') {
+          throw new Error(`「${name}」的问号要有自己的定位上下文`)
+        }
+        const tip = await hoverTip(view, view.tree(), name)
+        if (!tip || !text(tip).includes(said)) {
+          throw new Error(`「${name}」的问号应说出自己的说明: ${tip && text(tip)}`)
+        }
+        // 页签在最上面，向上开没有空间。
+        if (tip.props.style.top !== '100%') throw new Error(`「${name}」的气泡要向下展开`)
+        if (tip.props.style.bottom !== 'auto') throw new Error('向下展开时不该再压着 bottom')
+      }
+
+      // 问号是页签的兄弟节点，不是它的子节点：按钮里不能再套按钮，
+      // 而且点问号不该被当成「切换页签」。
+      const tab = tabButton(view, 'pending')
+      if (collect(tab).some(n => n.kind === 'host' && n.props?.role === 'tooltip')) {
+        throw new Error('气泡不该挂在页签按钮里面')
       }
     } finally { globalThis.fetch = realFetch }
   })
