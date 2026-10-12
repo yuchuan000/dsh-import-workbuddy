@@ -40,7 +40,7 @@ for (const file of files) {
     total += 1
     if (r.ok) {
       passed += 1
-      process.stdout.write(`  ✓ ${r.label}\n`)
+      process.stdout.write(`  ${r.skipped === true ? '–' : '✓'} ${r.label}\n`)
     } else {
       process.stdout.write(`  ✗ ${r.label}\n`)
       process.stdout.write(`      ${r.error?.message ?? r.error}\n`)

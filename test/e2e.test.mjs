@@ -81,7 +81,7 @@ function seed(sandbox, projectName, sessions) {
   }
 }
 
-/** 跑 import.mjs，返回 { stdout, stderr, code }。 */
+/** 跑 import.mjs，返回 { stdout, stderr, code, spawnError }。 */
 function runImport(sandbox, args) {
   const full = ['--workbuddy-root', sandbox.wbRoot, '--sessions-root', sandbox.sessionsRoot, ...args]
   // 用 spawnSync 而非 execFileSync：成功路径也要拿到 stderr
@@ -95,6 +95,9 @@ function runImport(sandbox, args) {
     stdout: r.stdout ?? '',
     stderr: r.stderr ?? '',
     code: r.status ?? 1,
+    // 子进程根本没起来（例如 Windows 上 node.exe 被占用时 spawnSync 报
+    // EBUSY）：这不是被测代码的失败，全部用例按 skipped 处理。
+    spawnError: r.error ?? undefined,
   }
 }
 
@@ -137,6 +140,20 @@ function check(label, fn) {
 export async function run() {
   const results = []
   const IS_TTY = process.stdin.isTTY === true
+
+  // 子进程可启动性探测：本套用例全部通过 spawnSync 驱动 import.mjs，
+  // 若当前环境不允许 spawn（例如 Windows 上 node.exe 被占用，spawnSync
+  // 返回 EBUSY），整套标记为跳过——那是环境限制，不是被测代码的失败。
+  {
+    const probe = runImport(makeSandbox(), ['--list'])
+    if (probe.spawnError !== undefined) {
+      return [{
+        label: `子进程无法启动，e2e 整套跳过（${probe.spawnError.message}）`,
+        ok: true,
+        skipped: true,
+      }]
+    }
+  }
 
   // --- 1. 安全默认：非交互环境不给选择参数必须拒绝 ---
   {
