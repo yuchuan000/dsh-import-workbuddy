@@ -19,11 +19,18 @@
 
 import { join } from 'node:path'
 
-import { collectCandidates, importCandidates } from '../lib/import-core.mjs'
+import { adoptArchiveRoot, listAdopted, restoreAdopted } from '../lib/adopt.mjs'
+import { collectCandidates, importCandidates, normalizeMode } from '../lib/import-core.mjs'
 import { deriveImportTitle } from '../lib/convert.mjs'
 import { findExistingSession } from '../lib/dsh-writer.mjs'
+import { syncBack } from '../lib/sync-back.mjs'
 import { dshHome } from '../lib/util.mjs'
-import { defaultWorkBuddyRoot, workbuddyTitle } from '../lib/workbuddy-reader.mjs'
+import { readWorkbuddyState } from '../lib/workbuddy-state.mjs'
+import {
+  defaultWorkBuddyRoot,
+  parseWorkBuddySession,
+  workbuddyTitle,
+} from '../lib/workbuddy-reader.mjs'
 
 const name = 'import-workbuddy'
 const inject = ['webServer']
@@ -133,27 +140,88 @@ function workbuddyRoot() {
 }
 
 /**
- * Shape one candidate for the page.
+ * Shape the candidate list for the page.
  *
- * `title` is derived with the same call the import will use (minus any
- * prefix), so the row the user picks is the row they get. `alreadyImported`
- * reads the store, which is what makes a second visit idempotent in the UI
- * instead of only on the write.
+ * Batch rather than per-row on purpose: `readWorkbuddyState` opens the
+ * WorkBuddy registry once and prepared-statements its way through the ids.
+ * Doing it per candidate would open and close a SQLite handle 61 times on
+ * every page load, against a database the WorkBuddy app may be writing to.
+ *
+ * Three flags, and they are independent:
+ *   - `alreadyImported`  — has a DSH artifact (idempotency)
+ *   - `deletedInWorkBuddy` — soft-deleted on the WorkBuddy side; the jsonl
+ *     survives on disk, which is how deleted conversations used to get
+ *     resurrected by a filesystem-only scan
+ *   - `adopted`          — source jsonl already archived away to DSH
  */
-function describeCandidate(candidate) {
-  let title
-  try {
-    title = deriveImportTitle(workbuddyTitle(candidate.parsed.messages), candidate.parsed.messages, undefined)
-  } catch { /* a title is cosmetic; never fail the listing over one */ }
-  return {
-    id: candidate.id,
-    title: typeof title === 'string' && title.length > 0 ? title : candidate.id,
-    cwd: candidate.cwd ?? null,
-    projectDir: candidate.projectDir ?? null,
-    createdAt: candidate.createdAt ?? null,
-    messageCount: candidate.messageCount,
-    alreadyImported: findExistingSession(sessionsRoot(), candidate.id) !== false,
+function describeCandidates(candidates) {
+  const states = readWorkbuddyState(candidates.map(c => c.id), { workbuddyRoot: workbuddyRoot() })
+  const adoptedIds = new Set(listAdopted().filter(entry => entry.present).map(entry => entry.id))
+
+  return candidates.map((candidate) => {
+    let title
+    try {
+      title = deriveImportTitle(workbuddyTitle(candidate.parsed.messages), candidate.parsed.messages, undefined)
+    } catch { /* a title is cosmetic; never fail the listing over one */ }
+    const state = states.get(candidate.id)
+    return {
+      id: candidate.id,
+      title: typeof title === 'string' && title.length > 0 ? title : candidate.id,
+      workBuddyTitle: state?.title ?? null,
+      cwd: candidate.cwd ?? null,
+      projectDir: candidate.projectDir ?? null,
+      createdAt: candidate.createdAt ?? null,
+      messageCount: candidate.messageCount,
+      alreadyImported: findExistingSession(sessionsRoot(), candidate.id) !== false,
+      deletedInWorkBuddy: state !== undefined && state.deletedAt !== null,
+      adopted: adoptedIds.has(candidate.id),
+      // 同步回写需要源文件还在；被接管归档的就没法再回写了。
+      canSyncBack: !adoptedIds.has(candidate.id),
+    }
+  })
+}
+
+/**
+ * Rows for conversations adopt mode has already taken away.
+ *
+ * Without these the page loses them: `collectCandidates` scans the WorkBuddy
+ * projects tree, and adopting moves the jsonl out of that tree. A reversibility
+ * the user cannot reach from the page is not reversibility — adopt mode would
+ * be a one-way door with the key filed in a manifest nobody reads.
+ *
+ * Title and message count come from the archived transcript itself, so the row
+ * still says what it is even though nothing else can see it any more.
+ */
+function describeAdoptedRows(adopted, onDiskIds) {
+  const rows = []
+  for (const entry of adopted) {
+    if (!entry.present || onDiskIds.has(entry.id)) continue
+    let title = entry.id
+    let messageCount = 0
+    let cwd = entry.cwd ?? null
+    try {
+      const parsed = parseWorkBuddySession(entry.archived)
+      messageCount = Array.isArray(parsed.messages) ? parsed.messages.length : 0
+      if (parsed.header?.cwd !== undefined) cwd = parsed.header.cwd
+      const derived = deriveImportTitle(workbuddyTitle(parsed.messages), parsed.messages, undefined)
+      if (typeof derived === 'string' && derived.length > 0) title = derived
+    } catch { /* an unreadable archive still restores; the row just says less */ }
+    rows.push({
+      id: entry.id,
+      title,
+      workBuddyTitle: null,
+      cwd,
+      projectDir: null,
+      createdAt: entry.archivedAt ?? null,
+      messageCount,
+      alreadyImported: findExistingSession(sessionsRoot(), entry.id) !== false,
+      // 已在 WorkBuddy 侧软删除，但界面上「已接管」才是可操作的那条信息。
+      deletedInWorkBuddy: false,
+      adopted: true,
+      canSyncBack: false,
+    })
   }
+  return rows
 }
 
 /** Normalize a body id list: strings only, trimmed, de-duplicated, capped. */
@@ -175,6 +243,8 @@ function normalizeOptions(value) {
   if (value === null || typeof value !== 'object') return options
   if (value.noTools === true) options.noTools = true
   if (value.toolsAsText === true) options.toolsAsText = true
+  // 模式走 normalizeMode：未知值回落 copy，绝不因为一个拼错的枚举走成接管。
+  if (value.mode !== undefined) options.mode = normalizeMode(value.mode)
   if (typeof value.titlePrefix === 'string' && value.titlePrefix.length > 0) options.titlePrefix = value.titlePrefix
   for (const key of ['truncate', 'toolTruncate']) {
     const raw = value[key]
@@ -204,11 +274,15 @@ function registerRoutes(host, ctx) {
       }
       try {
         const candidates = collectCandidates(workbuddyRoot())
+        const sessions = describeCandidates(candidates)
+        const adopted = listAdopted()
+        sessions.push(...describeAdoptedRows(adopted, new Set(sessions.map(s => s.id))))
         sendJson(response, 200, {
           ok: true,
           workbuddyRoot: workbuddyRoot(),
           sessionsRoot: sessionsRoot(),
-          sessions: candidates.map(describeCandidate),
+          archiveRoot: adoptArchiveRoot(),
+          sessions,
         })
       } catch (error) {
         sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })
@@ -264,17 +338,143 @@ function registerRoutes(host, ctx) {
           const dropped = new Set(exclude)
           selected = selected.filter(c => !dropped.has(c.id) && !dropped.has(c.id.replace(/^wb-/, '')))
         }
-        const result = importCandidates(selected, { sessionsRoot: sessionsRoot(), apply: true, ...options })
+        const result = importCandidates(selected, {
+          sessionsRoot: sessionsRoot(),
+          workbuddyRoot: workbuddyRoot(),
+          apply: true,
+          ...options,
+        })
         sendJson(response, 200, {
           ok: true,
+          mode: result.mode,
           imported: result.imported.map(entry => ({
             id: entry.candidate.id,
             path: entry.path ?? null,
             events: entry.events.length,
+            adopted: entry.adopted ?? null,
           })),
           existing: result.existing.map(c => c.id),
           empty: result.empty.map(c => c.id),
           failed: result.failed.map(entry => ({ id: entry.candidate.id, error: entry.error })),
+          adoptFailed: result.adoptFailed,
+        })
+      } catch (error) {
+        sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })
+      }
+    },
+  }))
+
+  // Sync mode's other half: push what happened in DSH back into the
+  // WorkBuddy transcript the import came from.
+  disposers.push(host.register({
+    kind: 'exact',
+    path: `${PREFIX}/sync`,
+    handler: async (request, response) => {
+      if (request.method !== 'POST') {
+        sendJson(response, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      if (!sameOrigin(ctx, request)) {
+        sendJson(response, 403, { ok: false, error: 'untrusted origin' })
+        return
+      }
+      let body
+      try {
+        body = await readJsonBody(request)
+      } catch (error) {
+        sendJson(response, 400, { ok: false, error: `bad request body: ${error.message}` })
+        return
+      }
+      const ids = normalizeIds(body?.ids)
+      if (ids !== undefined && ids.length === 0) {
+        sendJson(response, 200, { ok: true, synced: [], failed: [] })
+        return
+      }
+      try {
+        const root = workbuddyRoot()
+        const candidates = collectCandidates(root)
+        const wanted = new Set(ids ?? candidates.map(c => c.id))
+        const synced = []
+        const failed = []
+        for (const candidate of candidates) {
+          if (!wanted.has(candidate.id)) continue
+          try {
+            const result = syncBack({
+              id: candidate.id,
+              source: candidate.file,
+              sessionsRoot: sessionsRoot(),
+              cwd: candidate.cwd ?? undefined,
+            })
+            synced.push({ id: candidate.id, appended: result.appended, lastSeq: result.lastSeq })
+          } catch (error) {
+            failed.push({ id: candidate.id, error: error?.message ?? String(error) })
+          }
+        }
+        sendJson(response, 200, { ok: true, synced, failed })
+      } catch (error) {
+        sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })
+      }
+    },
+  }))
+
+  // Undo for adopt mode. Destructive in the other direction, so it reuses the
+  // same fence and the same containment check as the adopt itself.
+  disposers.push(host.register({
+    kind: 'exact',
+    path: `${PREFIX}/restore`,
+    handler: async (request, response) => {
+      if (request.method !== 'POST') {
+        sendJson(response, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      if (!sameOrigin(ctx, request)) {
+        sendJson(response, 403, { ok: false, error: 'untrusted origin' })
+        return
+      }
+      let body
+      try {
+        body = await readJsonBody(request)
+      } catch (error) {
+        sendJson(response, 400, { ok: false, error: `bad request body: ${error.message}` })
+        return
+      }
+      const ids = normalizeIds(body?.ids)
+      if (ids === undefined || ids.length === 0) {
+        sendJson(response, 400, { ok: false, error: 'ids is required' })
+        return
+      }
+      const restored = []
+      const failed = []
+      for (const id of ids) {
+        try {
+          const result = restoreAdopted({ id, workbuddyRoot: workbuddyRoot() })
+          restored.push({ id, ...result })
+        } catch (error) {
+          failed.push({ id, error: error?.message ?? String(error) })
+        }
+      }
+      sendJson(response, 200, { ok: true, restored, failed })
+    },
+  }))
+
+  // What adopt mode has taken, so the page can offer to give it back.
+  disposers.push(host.register({
+    kind: 'exact',
+    path: `${PREFIX}/adopted`,
+    handler: async (request, response) => {
+      if (request.method !== 'GET') {
+        sendJson(response, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      if (!sameOrigin(ctx, request)) {
+        sendJson(response, 403, { ok: false, error: 'untrusted origin' })
+        return
+      }
+      try {
+        sendJson(response, 200, {
+          ok: true,
+          archiveRoot: adoptArchiveRoot(),
+          adopted: listAdopted(),
         })
       } catch (error) {
         sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })

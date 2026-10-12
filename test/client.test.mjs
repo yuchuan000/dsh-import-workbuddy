@@ -186,6 +186,27 @@ function checkbox(view, rowText) {
 
 function textInput(view) { return hosts(view, n => n.type === 'input' && n.props.type === 'text')[0] }
 
+/** 归属方式下拉。 */
+function selectBox(view) { return hosts(view, n => n.type === 'select')[0] }
+
+/** 下拉里所有 option 的 value。 */
+function optionValues(view) {
+  const box = selectBox(view)
+  if (box === undefined) return []
+  return collect(box)
+    .filter(n => n.kind === 'host' && n.type === 'option')
+    .map(n => n.props.value)
+}
+
+/** 找到包含指定文字的 label 行里的徽章文本数组。 */
+function rowBadges(view, rowText) {
+  const row = hosts(view, n => n.type === 'label' && text(n).includes(rowText)).at(-1)
+  if (row === undefined) return []
+  return collect(row)
+    .filter(n => n.kind === 'host' && n.type === 'span' && n.props?.style?.borderRadius === 8)
+    .map(n => text(n))
+}
+
 function toastNode(view) { return hosts(view, n => n.props?.['data-toast'] === '1').at(-1) }
 
 async function click(view, node) {
@@ -263,54 +284,93 @@ function mountPage(bundle, services) {
 
 // --- fixtures ----------------------------------------------------------------
 
+// 字段与 host 的 /sessions 实际返回保持一致：三个状态标记互相独立。
 const SESSION_A = {
   id: 'wb-aaa', title: '修一个导入 bug', cwd: 'D:\\proj\\a', projectDir: 'a',
   createdAt: 1_760_000_000_000, messageCount: 12, alreadyImported: false,
+  deletedInWorkBuddy: false, adopted: false, canSyncBack: true,
 }
 const SESSION_B = {
   id: 'wb-bbb', title: '写一个可视化页面', cwd: 'D:\\proj\\b', projectDir: 'b',
   createdAt: 1_760_000_600_000, messageCount: 30, alreadyImported: false,
+  deletedInWorkBuddy: false, adopted: false, canSyncBack: true,
 }
 const SESSION_DONE = {
   id: 'wb-ccc', title: '已经导过的会话', cwd: 'D:\\proj\\c', projectDir: 'c',
   createdAt: 1_759_999_000_000, messageCount: 4, alreadyImported: true,
+  deletedInWorkBuddy: false, adopted: false, canSyncBack: true,
+}
+/** WorkBuddy 侧已删除、轨迹文件还在的会话。 */
+const SESSION_DELETED = {
+  id: 'wb-ddd', title: '我早就删掉的会话', cwd: 'D:\\proj\\d', projectDir: 'd',
+  createdAt: 1_759_998_000_000, messageCount: 7, alreadyImported: false,
+  deletedInWorkBuddy: true, adopted: false, canSyncBack: true,
+}
+/** 接管模式搬过来的：源文件已在 DSH 归档，不能再回写，但可以还原。 */
+const SESSION_ADOPTED = {
+  id: 'wb-eee', title: '已搬到 DSH 的会话', cwd: 'D:\\proj\\e', projectDir: null,
+  createdAt: 1_759_997_000_000, messageCount: 9, alreadyImported: true,
+  deletedInWorkBuddy: false, adopted: true, canSyncBack: false,
 }
 
 /**
- * 假 fetch：应答两条路由，并记录被问了什么。
+ * 假 fetch：应答四条路由，并记录被问了什么。
  *
- * 导入后要像真 host 一样把对应条目标成 alreadyImported —— 面板正是靠这个
- * 字段在下一次刷新时把刚导入的行退出选择的，不模拟就测不到这条路径。
+ * 状态迁移要跟着真 host 走，否则测不到面板的刷新逻辑：
+ *   /import   命中的条目变成 alreadyImported；adopt 模式再额外置 adopted 与
+ *             canSyncBack:false（源文件被搬走了，自然不能再回写）。
+ *   /restore  命中的条目退回 alreadyImported:false、adopted:false。
  */
-function fakeFetch({ sessions, importResult } = {}) {
+function fakeFetch({ sessions, importResult, syncResult, restoreResult } = {}) {
   const calls = []
   let current = (sessions ?? [SESSION_A, SESSION_B, SESSION_DONE]).map(s => ({ ...s }))
+  const respond = (payload) => ({ ok: true, status: 200, json: async () => payload })
   const impl = async (url, init = {}) => {
     const method = init.method ?? 'GET'
     const body = init.body === undefined ? undefined : JSON.parse(init.body)
     calls.push({ url: String(url), method, body })
     if (url.endsWith('/sessions') && method === 'GET') {
-      return {
-        ok: true, status: 200,
-        json: async () => ({
-          ok: true,
-          workbuddyRoot: 'C:\\Users\\USER\\.workbuddy',
-          sessionsRoot: 'C:\\Users\\USER\\.dsh\\sessions',
-          sessions: current.map(s => ({ ...s })),
-        }),
-      }
+      return respond({
+        ok: true,
+        workbuddyRoot: 'C:\\Users\\USER\\.workbuddy',
+        sessionsRoot: 'C:\\Users\\USER\\.dsh\\sessions',
+        sessions: current.map(s => ({ ...s })),
+      })
     }
     if (url.endsWith('/import') && method === 'POST') {
       const ids = new Set(body?.ids ?? [])
-      current = current.map(s => (ids.has(s.id) ? { ...s, alreadyImported: true } : s))
-      return {
-        ok: true, status: 200,
-        json: async () => (importResult ?? {
-          ok: true,
-          imported: (body?.ids ?? []).map(id => ({ id, path: `C:\\x\\${id}`, events: 20 })),
-          existing: [], empty: [], failed: [],
-        }),
-      }
+      const adopting = body?.options?.mode === 'adopt'
+      current = current.map(s => (ids.has(s.id)
+        ? {
+            ...s,
+            alreadyImported: true,
+            ...(adopting ? { adopted: true, canSyncBack: false, projectDir: null } : {}),
+          }
+        : s))
+      return respond(importResult ?? {
+        ok: true,
+        mode: body?.options?.mode ?? 'copy',
+        imported: (body?.ids ?? []).map(id => ({ id, path: `C:\\x\\${id}`, events: 20 })),
+        existing: [], empty: [], failed: [], adoptFailed: [],
+      })
+    }
+    if (url.endsWith('/sync') && method === 'POST') {
+      return respond(syncResult ?? {
+        ok: true,
+        synced: (body?.ids ?? []).map(id => ({ id, appended: 4, lastSeq: 99 })),
+        failed: [],
+      })
+    }
+    if (url.endsWith('/restore') && method === 'POST') {
+      const ids = new Set(body?.ids ?? [])
+      current = current.map(s => (ids.has(s.id)
+        ? { ...s, alreadyImported: false, adopted: false, canSyncBack: true }
+        : s))
+      return respond(restoreResult ?? {
+        ok: true,
+        restored: (body?.ids ?? []).map(id => ({ id, restored: `C:\\wb\\${id}.jsonl` })),
+        failed: [],
+      })
     }
     return { ok: false, status: 404, json: async () => ({ ok: false, error: 'not found' }) }
   }
@@ -371,7 +431,7 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('列表渲染全部会话，已导入的行不可再勾选', async () => {
+  await checkAsync('列表渲染全部会话，并给已导入的行打徽章', async () => {
     globalThis.fetch = fakeFetch().impl
     try {
       const { view } = mountPage(loadBundle())
@@ -384,11 +444,31 @@ export async function run() {
 
       const box = checkbox(view, '已经导过的会话')
       if (box === undefined) throw new Error('已导入行应有 checkbox')
-      if (box.props.disabled !== true) throw new Error('已导入的行必须禁用勾选')
-      if (box.props.checked !== true) throw new Error('已导入的行应显示为已勾选')
 
       const pending = checkbox(view, '修一个导入 bug')
       if (pending.props.disabled !== false) throw new Error('未导入的行应可勾选')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  // 已导入的行必须是可勾选的：它是「回写」与「还原」的目标。旧的规则让复选
+  // 框替导入按钮做判断，结果同步和还原根本选不中任何东西。
+  await checkAsync('已导入的行可勾选，但导入按钮忽略它', async () => {
+    globalThis.fetch = fakeFetch().impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      const box = checkbox(view, '已经导过的会话')
+      if (box.props.disabled !== false) throw new Error('已导入的行应可勾选（回写/还原的目标）')
+
+      await change(view, box, { checked: true })
+      if (button(view, '导入所选（0）') === undefined) {
+        throw new Error(`勾选已导入的行不应计入导入: ${text(view.tree()).slice(0, 300)}`)
+      }
+      if (button(view, '导入所选（0）').props.disabled !== true) throw new Error('没有可导入的行时按钮应禁用')
+      // 但回写按钮应当出现 —— 这正是勾选它的意义。
+      if (button(view, '回写所选（1）') === undefined) {
+        throw new Error(`勾选已导入且可回写的行应出现回写按钮: ${text(view.tree()).slice(0, 300)}`)
+      }
     } finally { globalThis.fetch = realFetch }
   })
 
@@ -532,6 +612,167 @@ export async function run() {
       await click(view, button(view, '全选未导入'))
       await click(view, button(view, '导入所选（2）'))
       if (!text(view.tree()).includes('overrun')) throw new Error('应显示失败原因')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  // --- 归属模式 ---------------------------------------------------------------
+
+  await checkAsync('模式下拉三选一，默认 copy，提示随选择变化', async () => {
+    globalThis.fetch = fakeFetch().impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      const box = selectBox(view)
+      if (box === undefined) throw new Error('应有归属方式下拉')
+      const values = optionValues(view)
+      if (values.join(',') !== 'copy,adopt,sync') throw new Error(`下拉选项: ${values.join(',')}`)
+      if (box.props.value !== 'copy') throw new Error('默认应是 copy（与既有行为一致）')
+      if (!text(view.tree()).includes('只读 WorkBuddy 的会话')) throw new Error('默认应显示 copy 的说明')
+
+      await change(view, box, { value: 'adopt' })
+      const body = text(view.tree())
+      if (!body.includes('归档到 DSH')) throw new Error(`切到 adopt 后应显示接管说明: ${body.slice(0, 300)}`)
+      if (body.includes('只读 WorkBuddy 的会话')) throw new Error('不应再显示 copy 的说明')
+
+      await change(view, selectBox(view), { value: 'sync' })
+      if (!text(view.tree()).includes('保留 WorkBuddy 原会话')) throw new Error('切到 sync 后应显示同步说明')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('导入请求带上选中的模式', async () => {
+    const fetch = fakeFetch()
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await change(view, selectBox(view), { value: 'adopt' })
+      await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
+      await click(view, button(view, '导入所选（1）'))
+      const post = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/import'))
+      if (post === undefined) throw new Error('应发起导入请求')
+      if (post.body.options?.mode !== 'adopt') throw new Error(`应带 mode=adopt: ${JSON.stringify(post.body)}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('adopt 模式导入后行变「已接管」，并可还原', async () => {
+    const fetch = fakeFetch({ sessions: [SESSION_A] })
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await change(view, selectBox(view), { value: 'adopt' })
+      await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
+      await click(view, button(view, '导入所选（1）'))
+
+      const badges = rowBadges(view, '修一个导入 bug')
+      if (!badges.includes('已接管')) throw new Error(`接管后应有已接管徽章: ${badges.join(',')}`)
+
+      // 刚导入的那行已被清出选择，重新勾上才能还原。
+      await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
+      if (button(view, '还原到 WorkBuddy') === undefined) {
+        throw new Error(`已接管的行应可还原: ${text(view.tree()).slice(0, 300)}`)
+      }
+      await click(view, button(view, '还原到 WorkBuddy'))
+      const post = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/restore'))
+      if (post === undefined) throw new Error('应发起还原请求')
+      if (post.body.ids.join(',') !== 'wb-aaa') throw new Error(`还原目标: ${post.body.ids.join(',')}`)
+      // 还原成功后徽章应当消失（假 fetch 已把 adopted 置回 false）
+      if (rowBadges(view, '修一个导入 bug').includes('已接管')) throw new Error('还原后不应还显示已接管')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('WorkBuddy 侧已删除的会话打标且不被全选', async () => {
+    globalThis.fetch = fakeFetch({ sessions: [SESSION_A, SESSION_DELETED] }).impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      if (!text(view.tree()).includes('已删除')) throw new Error('应显示已删除徽章')
+      if (!rowBadges(view, '我早就删掉的会话').includes('已删除')) throw new Error('徽章应在已删除的那一行上')
+      if (!text(view.tree()).includes('你在 WorkBuddy 里已经删过')) throw new Error('应解释这个标记的含义')
+
+      await click(view, button(view, '全选未导入'))
+      const importBtn = button(view, '导入所选（1）')
+      if (importBtn === undefined) {
+        throw new Error(`全选应跳过已删除的，只选 1 个: ${text(view.tree()).slice(0, 300)}`)
+      }
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('已删除的会话可以手动勾选导入', async () => {
+    const fetch = fakeFetch({ sessions: [SESSION_A, SESSION_DELETED] })
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await change(view, checkbox(view, '我早就删掉的会话'), { checked: true })
+      const importBtn = button(view, '导入所选（1）')
+      if (importBtn === undefined) throw new Error('手动勾选已删除的会话应能导入')
+      await click(view, importBtn)
+      const post = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/import'))
+      if (post.body.ids.join(',') !== 'wb-ddd') throw new Error(`应只导入勾中的那条: ${post.body.ids.join(',')}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('回写只发已导入的 id，且走 /sync', async () => {
+    const fetch = fakeFetch()
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      // 先勾一个未导入的：它不能进回写目标。
+      await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
+      if (button(view, '回写所选（1）') !== undefined) throw new Error('未导入的行不该出现在回写目标里')
+
+      await change(view, checkbox(view, '已经导过的会话'), { checked: true })
+      const syncBtn = button(view, '回写所选（1）')
+      if (syncBtn === undefined) throw new Error(`应出现回写按钮: ${text(view.tree()).slice(0, 300)}`)
+      const before = toastNode(view)?.props?.key ?? 0
+      await click(view, syncBtn)
+      const post = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/sync'))
+      if (post === undefined) throw new Error('应发起回写请求')
+      if (post.body.ids.join(',') !== 'wb-ccc') throw new Error(`回写目标: ${post.body.ids.join(',')}`)
+
+      // toast 文案是 prop 不是子节点，必须读 props.text。
+      const toast = toastNode(view)
+      if (toast === undefined) throw new Error('应弹出回写结果')
+      if (toast.props.key <= before) throw new Error(`toast 未刷新: key ${toast.props.key}`)
+      if (!String(toast.props.text).includes('新增 4 行')) throw new Error(`toast 文案: ${toast.props.text}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('源文件已被接管归档的行不能回写', async () => {
+    const fetch = fakeFetch({ sessions: [SESSION_ADOPTED] })
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      if (!rowBadges(view, '已搬到 DSH 的会话').includes('已接管')) throw new Error('应有已接管徽章')
+      await change(view, checkbox(view, '已搬到 DSH 的会话'), { checked: true })
+      if (button(view, '回写所选（1）') !== undefined) throw new Error('已归档的源文件不能再回写')
+      if (button(view, '还原到 WorkBuddy') === undefined) throw new Error('但应当可以还原')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('接管失败单独提示，不算作导入失败', async () => {
+    globalThis.fetch = fakeFetch({
+      sessions: [SESSION_A],
+      importResult: {
+        ok: true,
+        mode: 'adopt',
+        imported: [{ id: 'wb-aaa', path: 'p', events: 10 }],
+        existing: [], empty: [], failed: [],
+        adoptFailed: [{ id: 'wb-aaa', error: '库被 WorkBuddy 占用' }],
+      },
+    }).impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await change(view, selectBox(view), { value: 'adopt' })
+      await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
+      await click(view, button(view, '导入所选（1）'))
+      const body = text(view.tree())
+      if (!body.includes('搬走源文件失败')) throw new Error(`应单独提示接管失败: ${body.slice(0, 300)}`)
+      if (body.includes('部分失败')) throw new Error('不应混进「导入失败」的措辞')
     } finally { globalThis.fetch = realFetch }
   })
 

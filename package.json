@@ -40,6 +40,9 @@
     "import:apply": "node import.mjs --apply",
     "attach": "node attach-workspaces.mjs",
     "attach:apply": "node attach-workspaces.mjs --apply",
+    "sync": "node sync-back.mjs",
+    "sync:list": "node sync-back.mjs --list",
+    "sync:stamp": "node sync-back.mjs --stamp --all",
     "test": "node test/run.mjs"
   },
   "dsh": {
@@ -60,6 +63,7 @@
     "test/",
     "import.mjs",
     "export.mjs",
+    "sync-back.mjs",
     "attach-workspaces.mjs",
     "cordis.patch.yml",
     "README.md",

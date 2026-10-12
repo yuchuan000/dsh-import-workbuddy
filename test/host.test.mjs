@@ -1,10 +1,13 @@
 /**
  * 进程内回归测试：dsh-import-workbuddy HOST 半场（client 桥接路由）。
  *
- * 用假 cordis ctx + 假 webServer 驱动 src/index.js 注册的两条路由，沙箱
+ * 用假 cordis ctx + 假 webServer 驱动 src/index.js 注册的五条路由，沙箱
  * DSH_HOME / WORKBUDDY_HOME，覆盖：
- *   - GET  /sessions 列出候选（含 alreadyImported 判定）
+ *   - GET  /sessions 列出候选（含 alreadyImported、已删除、已接管判定）
  *   - POST /import   按 id 精确导入、幂等跳过、exclude、空选择 no-op
+ *   - POST /sync     回写新增内容、不重复追加
+ *   - POST /restore  接管的可逆路径
+ *   - GET  /adopted  列出已接管
  *   - 空会话进 empty 桶
  *   - noTools 选项真的丢掉工具事件
  *   - 安全护栏：方法不符 405、跨源 403、坏 body 400、坏选项 400
@@ -14,19 +17,31 @@
  */
 
 import { strict as assert } from 'node:assert'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 import zlib from 'node:zlib'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
 const mod = await import(pathToFileURL(join(here, '..', 'src', 'index.js')).href)
+const { CURRENT_ARTIFACT_FILENAME, findExistingSession } = await import(
+  pathToFileURL(join(here, '..', 'lib', 'dsh-writer.mjs')).href
+)
 
 export const name = 'host'
 
 const SESSIONS_PATH = '/__dsh-import-workbuddy/sessions'
 const IMPORT_PATH = '/__dsh-import-workbuddy/import'
+const SYNC_PATH = '/__dsh-import-workbuddy/sync'
+const RESTORE_PATH = '/__dsh-import-workbuddy/restore'
+const ADOPTED_PATH = '/__dsh-import-workbuddy/adopted'
+
+const ZSTD_C_CHECKSUM = zlib.constants.ZSTD_c_checksumFlag
+const { zstdCompressSync } = zlib
 
 const results = []
 function check(label, fn) {
@@ -300,7 +315,134 @@ export async function run() {
     sb.restore()
   }
 
-  // 7. 安全护栏
+  // 7. 归属模式：已删除标注、接管、回写、还原
+  {
+    const sb = makeSandbox()
+    const db = new DatabaseSync(join(dirname(sb.wbRoot), 'workbuddy.db'))
+    db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, title TEXT, status TEXT, deleted_at INTEGER)')
+    db.prepare('INSERT INTO sessions VALUES (?,?,?,?,NULL)').run('sess-live', 'd:/work/proj-a', '活着的', 'active')
+    db.prepare('INSERT INTO sessions VALUES (?,?,?,?,?)').run('sess-gone', 'd:/work/proj-a', '删掉的', 'active', 1791600009999)
+    db.close()
+    sb.seed('proj-a', [
+      { id: 'sess-live', cwd: 'd:/work/proj-a', userText: 'a', assistantText: 'b' },
+      { id: 'sess-gone', cwd: 'd:/work/proj-a', userText: 'c', assistantText: 'd' },
+    ])
+    const { route } = makeHarness()
+
+    await checkAsync('/sessions 标出 WorkBuddy 侧已删除的会话', async () => {
+      const { payload } = await call(route(SESSIONS_PATH))
+      const live = payload.sessions.find(s => s.id === 'wb-sess-live')
+      const gone = payload.sessions.find(s => s.id === 'wb-sess-gone')
+      assert.equal(live.deletedInWorkBuddy, false)
+      assert.equal(gone.deletedInWorkBuddy, true, 'db 里打了 deleted_at 的必须标出来')
+      assert.equal(gone.workBuddyTitle, '删掉的')
+    })
+
+    await checkAsync('adopt 模式导入会把源文件归档走', async () => {
+      const { payload } = await call(route(IMPORT_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-live'], options: { mode: 'adopt' } },
+      })
+      assert.equal(payload.imported.length, 1)
+      assert.equal(payload.mode, 'adopt')
+      assert.equal(existsSync(join(sb.wbRoot, 'proj-a', 'sess-live.jsonl')), false)
+    })
+
+    // 接管之后源文件离开了 WorkBuddy 目录树，扫描再也看不到它。如果 /sessions
+    // 不补上这一行，还原就只能在终端里做——可逆性等于不存在。
+    await checkAsync('/sessions 仍列出已接管的会话，供还原', async () => {
+      const { payload } = await call(route(SESSIONS_PATH))
+      const row = payload.sessions.find(s => s.id === 'wb-sess-live')
+      assert.ok(row !== undefined, '接管后这一行不能消失')
+      assert.equal(row.adopted, true)
+      assert.equal(row.canSyncBack, false)
+    })
+
+    await checkAsync('GET /adopted 列出被接管的会话', async () => {
+      const { payload } = await call(route(ADOPTED_PATH))
+      assert.ok(payload.adopted.some(entry => entry.id === 'wb-sess-live' && entry.present))
+    })
+
+    await checkAsync('POST /restore 把源文件放回去并清掉软删除', async () => {
+      const { payload } = await call(route(RESTORE_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-live'] },
+      })
+      assert.equal(payload.restored.length, 1)
+      assert.equal(existsSync(join(sb.wbRoot, 'proj-a', 'sess-live.jsonl')), true)
+      const check = new DatabaseSync(join(dirname(sb.wbRoot), 'workbuddy.db'), { readOnly: true })
+      assert.equal(check.prepare('SELECT deleted_at FROM sessions WHERE id = ?').get('sess-live').deleted_at, null)
+      check.close()
+    })
+    sb.restore()
+  }
+
+  // 8. 同步回写
+  {
+    const sb = makeSandbox()
+    sb.seed('proj-a', [{ id: 'sess-s', cwd: 'd:/work/proj-a', userText: 'a', assistantText: 'b' }])
+    const source = join(sb.wbRoot, 'proj-a', 'sess-s.jsonl')
+    const { route } = makeHarness()
+
+    await checkAsync('没导入就回写会失败，且写进 failed 桶', async () => {
+      const { payload } = await call(route(SYNC_PATH), { method: 'POST', body: { ids: ['wb-sess-s'] } })
+      assert.equal(payload.synced.length, 0)
+      assert.equal(payload.failed.length, 1)
+      assert.match(payload.failed[0].error, /先导入再同步/)
+    })
+
+    const before = readFileSync(source, 'utf8')
+    await call(route(IMPORT_PATH), { method: 'POST', body: { ids: ['wb-sess-s'], options: { mode: 'sync' } } })
+
+    await checkAsync('sync 模式导入不改动源文件', async () => {
+      assert.equal(readFileSync(source, 'utf8'), before)
+    })
+
+    // 模拟 DSH 里又聊了几轮：往产物尾部追加一帧。
+    const artifact = join(
+      findExistingSession(sb.sessionsRoot, 'wb-sess-s'),
+      CURRENT_ARTIFACT_FILENAME,
+    )
+    const watermark = JSON.parse(readFileSync(join(dirname(artifact), 'workbuddy-sync.json'), 'utf8'))
+    let seq = watermark.lastSeq + 1
+    const extra = []
+    for (let i = 0; i < 2; i++) {
+      extra.push(JSON.stringify({
+        type: 'user/message', seq: seq++,
+        data: { content: [{ type: 'text', text: `DSH 新问题 ${i + 1}` }] },
+      }))
+      extra.push(JSON.stringify({
+        type: 'assistant/message', seq: seq++,
+        data: { message: { content: [{ type: 'text', text: `DSH 新回答 ${i + 1}` }] } },
+      }))
+    }
+    appendFileSync(artifact, zstdCompressSync(Buffer.from(`${extra.join('\n')}\n`, 'utf8'), {
+      params: { [ZSTD_C_CHECKSUM]: 1 },
+    }))
+
+    await checkAsync('POST /sync 只回写水位线之后的内容', async () => {
+      const { payload } = await call(route(SYNC_PATH), { method: 'POST', body: { ids: ['wb-sess-s'] } })
+      assert.equal(payload.synced.length, 1)
+      assert.equal(payload.synced[0].appended, 4)
+      const after = readFileSync(source, 'utf8')
+      assert.ok(after.startsWith(before), '原文必须原样保留')
+      assert.ok(after.includes('DSH 新问题 1'))
+    })
+
+    await checkAsync('再次回写不重复追加', async () => {
+      const { payload } = await call(route(SYNC_PATH), { method: 'POST', body: { ids: ['wb-sess-s'] } })
+      assert.equal(payload.synced[0].appended, 0)
+      const after = readFileSync(source, 'utf8')
+      assert.equal(after.split('DSH 新问题 1').length - 1, 1)
+    })
+
+    await checkAsync('回写后源文件每行仍是合法 JSON', async () => {
+      for (const line of readFileSync(source, 'utf8').split('\n').filter(l => l.trim().length > 0)) {
+        JSON.parse(line)
+      }
+    })
+    sb.restore()
+  }
+
+  // 9. 安全护栏（含新路由）
   {
     const sb = makeSandbox()
     sb.seed('proj-a', [{ id: 'sess-1', cwd: 'd:/work/proj-a', userText: 'x', assistantText: 'y' }])
@@ -330,6 +472,37 @@ export async function run() {
     await checkAsync('坏选项返回 400', async () => {
       const { status } = await call(route(IMPORT_PATH), { method: 'POST', body: { ids: ['wb-sess-1'], options: { truncate: -1 } } })
       assert.equal(status, 400)
+    })
+
+    // 新路由必须继承同一套护栏：/sync 会往 WorkBuddy 的轨迹文件里追加内容，
+    // /restore 会把文件搬回原位，两者都是 DNS-rebinding 页面想要的目标。
+    await checkAsync('/sync 方法不符返回 405', async () => {
+      const { status } = await call(route(SYNC_PATH))
+      assert.equal(status, 405)
+    })
+    await checkAsync('/sync 跨源返回 403', async () => {
+      const { status } = await call(route(SYNC_PATH), {
+        method: 'POST', headers: { 'sec-fetch-site': 'cross-site' }, body: { ids: ['wb-sess-1'] },
+      })
+      assert.equal(status, 403)
+    })
+    await checkAsync('/sync 坏 body 返回 400', async () => {
+      const { status } = await call(route(SYNC_PATH), { method: 'POST', body: 'not json' })
+      assert.equal(status, 400)
+    })
+    await checkAsync('/restore 缺少 ids 返回 400', async () => {
+      const { status } = await call(route(RESTORE_PATH), { method: 'POST', body: {} })
+      assert.equal(status, 400)
+    })
+    await checkAsync('/restore 跨源返回 403', async () => {
+      const { status } = await call(route(RESTORE_PATH), {
+        method: 'POST', headers: { 'sec-fetch-site': 'cross-site' }, body: { ids: ['wb-sess-1'] },
+      })
+      assert.equal(status, 403)
+    })
+    await checkAsync('/adopted 非 loopback Host 返回 403', async () => {
+      const { status } = await call(route(ADOPTED_PATH), { headers: { host: 'evil.example.com' } })
+      assert.equal(status, 403)
     })
     sb.restore()
   }

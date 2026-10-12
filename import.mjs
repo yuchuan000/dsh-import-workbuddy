@@ -16,7 +16,7 @@
 
 import { join } from 'node:path'
 
-import { collectCandidates, importCandidates } from './lib/import-core.mjs'
+import { MODES, collectCandidates, importCandidates, normalizeMode } from './lib/import-core.mjs'
 import { dshHome, log, parseArgs, parseSince } from './lib/util.mjs'
 import { defaultWorkBuddyRoot } from './lib/workbuddy-reader.mjs'
 import { excludeByIds, filterByIds, printCandidates, selectInteractively } from './lib/select.mjs'
@@ -32,6 +32,13 @@ const USAGE = `用法:
   --only <ids>           只导入这些 id（逗号/空格分隔，可省略 wb- 前缀）
   --exclude <ids>        排除这些 id（与 --only 同用时先取 --only 再排除）
   --all                  导入全部候选（显式全量；非交互环境必须显式指定）
+
+归属方式（默认 copy，与设置页的下拉同一组语义）:
+  --mode <copy|adopt|sync>
+          copy    只读源文件，在 DSH 里写一份新的（默认）
+          adopt   导入后把源文件归档到 ~/.dsh/workbuddy-adopted 并在
+                  WorkBuddy 注册表里打软删除，DSH 成为唯一一份
+          sync    源文件不动；DSH 里新增的内容可用 sync-back.mjs 回写进去
 
 options:
   --apply                真正写入（默认 --dry-run 只预览）
@@ -144,7 +151,7 @@ async function importWorkBuddy(options) {
   const selected = resolution.selected
   log(`[workbuddy] 候选 ${selected.length}/${candidates.length} 个会话`)
 
-  const { imported, existing, empty, failed } = importCandidates(selected, options)
+  const { imported, existing, empty, failed, adoptFailed } = importCandidates(selected, options)
   let previewDone = false
   for (const entry of imported) {
     const { candidate, events, path: written } = entry
@@ -164,12 +171,24 @@ async function importWorkBuddy(options) {
   for (const entry of failed) {
     log(`  [失败] ${entry.candidate.id}: ${entry.error}`)
   }
+  // 接管是两件事（搬文件 + 打软删除），要说清楚各自成没成：
+  // 文件搬走了但库没写成，状态可诊断；反过来就是「列表没了、文件也没了」。
+  for (const entry of imported) {
+    if (entry.adopted === undefined) continue
+    log(`  [接管] ${entry.candidate.id} -> ${entry.adopted.archived}`)
+    if (entry.adopted.softDeleted !== true) {
+      log(`    注意: 未能在 WorkBuddy 注册表里标记删除（${entry.adopted.alreadyDeleted === true ? '那里本来就删过了' : '可能正被 WorkBuddy 占用'}），文件已归档`)
+    }
+  }
+  for (const entry of adoptFailed) {
+    log(`  [接管失败] ${entry.id}: ${entry.error}（会话已导入，只是源文件没搬走）`)
+  }
 
-  log(`[workbuddy] 结果: 新导入 ${imported.length}，已存在跳过 ${existing.length}，空会话 ${empty.length}，失败 ${failed.length}`)
+  log(`[workbuddy] 结果: 新导入 ${imported.length}，已存在跳过 ${existing.length}，空会话 ${empty.length}，失败 ${failed.length}${adoptFailed.length > 0 ? `，接管失败 ${adoptFailed.length}` : ''}`)
   if (!options.apply && imported.length > 0) {
     log(`[workbuddy] 提示: 加上 --apply 才会写入 ${options.sessionsRoot}，随后重启 dsh web 生效`)
   }
-  return { imported, existing, empty, failed }
+  return { imported, existing, empty, failed, adoptFailed }
 }
 
 /** 把 `--only a,b c` 这类值拆成 id 数组。 */
@@ -206,6 +225,12 @@ async function main() {
     exclude: splitIds(flags.exclude),
     all: flags.all === true,
     list: flags.list === true,
+    mode: normalizeMode(flags.mode),
+  }
+  // 界面上的下拉给不出非法值，但终端里是手打的。静默回落成 copy 会让人以为
+  // 已经接管了其实没有，所以在 CLI 这里直接报错。
+  if (flags.mode !== undefined && !MODES.includes(flags.mode)) {
+    throw new Error(`--mode 只接受 ${MODES.join(' | ')}，收到: ${flags.mode}`)
   }
   if (options.limit !== undefined && !Number.isInteger(options.limit)) throw new Error('--limit 必须是整数')
   if (options.truncate !== undefined && (!Number.isInteger(options.truncate) || options.truncate < 0)) throw new Error('--truncate 必须是非负整数')
@@ -214,7 +239,8 @@ async function main() {
   if (options.toolTruncate === 0) options.toolTruncate = undefined
   if (options.all === true && options.only !== undefined) throw new Error('--all 与 --only 不能同时使用')
 
-  log(`模式: ${options.apply ? '--apply（写入）' : '--dry-run（预览）'}`)
+  log(`写入: ${options.apply ? '--apply（真正写入）' : '--dry-run（只预览）'}`)
+  log(`归属方式: ${options.mode}`)
   log(`会话根: ${options.sessionsRoot}`)
   log(`WorkBuddy 根: ${options.workbuddyRoot}`)
 
