@@ -79,6 +79,11 @@ DSH ($DSH_HOME/sessions)  →  重启后出现在会话列表
    macOS/Linux：ln -s ../vendor/dsh-import-workbuddy node_modules/dsh-import-workbuddy
    如果 node_modules/dsh-import-workbuddy 已经存在，先确认它指向的是不是
    vendor 下这份副本；不是就删掉重建。
+   【已装过要更新时】先在第 1 步 git pull 拿到新代码，再看这里：
+   如果是 `->` 链接，pull 完即生效；如果它是**真实目录**（pnpm 建的硬链接副本，
+   与 vendor 的文件 inode 相同），git 更新 vendor 会写出新 inode、链接断开，
+   还得把 src/*.js **覆盖**进 node_modules（cp -f / copy /Y，不要先删再建），
+   否则 DSH 加载的仍是旧代码。
 
 5. 【重要】这一步不要导入任何东西，不要运行 import.mjs / attach-workspaces.mjs。
    装插件和导会话是两件事：装完在设置页里勾选导入即可，界面与命令行共用
@@ -246,6 +251,16 @@ ln -sfn ../vendor/dsh-import-workbuddy node_modules/dsh-import-workbuddy
 > 只 `git clone` 仓库**不会**有界面 —— 那只提供 `import.mjs` 等命令行脚本。
 > 插件必须落进 `vendor/` + `node_modules/` 并写进 `dsh.profile.bundles` 才会在
 > 设置里出现。
+
+**更新已有安装**：在 `vendor/dsh-import-workbuddy` 里 `git pull --ff-only` 就够了 ——
+前提是 `node_modules/dsh-import-workbuddy` 是**指向 vendor 的链接**（`ls -l` 看得到
+`->`）。若它是 pnpm 建的**硬链接副本**（真实目录、inode 与 vendor 相同），
+git 更新 vendor 会写出新 inode、链接断开，还得把 `src/*.js` **覆盖**进去
+（`cp -f` / `copy /Y`，不要先删再建），否则 DSH 加载的仍是旧代码。
+
+判定装了哪一版：`git -C vendor/dsh-import-workbuddy log -1 --format='%h %s'` 与
+`git ls-remote https://github.com/yuchuan000/dsh-import-workbuddy.git HEAD` 的前 7 位
+要一致，且 vendor 与 node_modules 两份 `src/client.js` 的 sha256 要一致。
 
 ---
 
