@@ -16,10 +16,9 @@
 
 import { join } from 'node:path'
 
-import { dshHome, log, parseArgs, parseSince, truncate } from './lib/util.mjs'
-import { findExistingSession, writeSession } from './lib/dsh-writer.mjs'
-import { buildDshEvents, deriveImportTitle } from './lib/convert.mjs'
-import { defaultWorkBuddyRoot, listWorkBuddySessions, parseWorkBuddySession, workbuddyTitle } from './lib/workbuddy-reader.mjs'
+import { collectCandidates, importCandidates } from './lib/import-core.mjs'
+import { dshHome, log, parseArgs, parseSince } from './lib/util.mjs'
+import { defaultWorkBuddyRoot } from './lib/workbuddy-reader.mjs'
 import { excludeByIds, filterByIds, printCandidates, selectInteractively } from './lib/select.mjs'
 
 const USAGE = `用法:
@@ -51,46 +50,6 @@ options:
                          可用 WORKBUDDY_HOME 覆盖）
   --title-prefix <str>   标题前缀（默认无；导入的会话标题与原生会话一致）
 `
-
-/** 把归一化消息流编译成 DSH 事件，并应用各 --no-tools / --truncate 选项。 */
-function toEvents(messages, options, systemPrompt) {
-  const filtered = []
-  for (const message of messages) {
-    let blocks = message.blocks
-    if (options.noTools) {
-      blocks = blocks.filter(block => block.type !== 'tool-call')
-    } else if (options.toolsAsText === true) {
-      // 纯文本模式：不生成 tool/call + tool/result 事件（轨迹无工具卡片）。
-      blocks = blocks.map((block) => {
-        if (block.type === 'tool-call') {
-          return { type: 'text', text: `[工具调用: ${block.name}]\n${block.arguments}` }
-        }
-        return block
-      })
-    }
-    if (options.truncate !== undefined) {
-      blocks = blocks.map((block) => {
-        if (block.type === 'text' || block.type === 'reasoning') {
-          return { ...block, text: truncate(block.text, options.truncate) }
-        }
-        return block
-      })
-    }
-    if (options.toolTruncate !== undefined) {
-      blocks = blocks.map((block) => {
-        if (block.type === 'tool-call') return { ...block, arguments: truncate(block.arguments, options.toolTruncate) }
-        return block
-      })
-    }
-    filtered.push({ ...message, blocks })
-  }
-  return buildDshEvents(filtered, {
-    toolEvents: options.noTools !== true && options.toolsAsText !== true,
-    title: options.title,
-    titlePinned: true,
-    systemPrompt,
-  })
-}
 
 /**
  * 解析出最终要导入的会话集合。
@@ -162,18 +121,7 @@ async function resolveSelection(candidates, options) {
 
 /** 导入 WorkBuddy 会话；返回各类结果计数。 */
 async function importWorkBuddy(options) {
-  const candidates = []
-  for (const entry of listWorkBuddySessions(options.workbuddyRoot)) {
-    const parsed = parseWorkBuddySession(entry.file)
-    if (parsed.header.id === undefined) continue
-    candidates.push({
-      file: entry.file,
-      parsed,
-      id: `wb-${parsed.header.id}`,
-      cwd: parsed.header.cwd,
-      createdAt: parsed.header.createdAt,
-    })
-  }
+  const candidates = collectCandidates(options.workbuddyRoot)
 
   const resolution = await resolveSelection(candidates, options)
 
@@ -184,7 +132,7 @@ async function importWorkBuddy(options) {
       id: c.id,
       cwd: c.cwd,
       createdAt: c.createdAt,
-      messageCount: c.parsed.messages.length,
+      messageCount: c.messageCount,
     })))
     log('\n用 --only <序号对应 id> 导入，或去掉 --list 在终端里交互勾选。')
     return { imported: [], existing: [], empty: [], failed: [], listed: resolution.listed }
@@ -196,54 +144,25 @@ async function importWorkBuddy(options) {
   const selected = resolution.selected
   log(`[workbuddy] 候选 ${selected.length}/${candidates.length} 个会话`)
 
-  const existing = []
-  const imported = []
-  const empty = []
-  const failed = []
+  const { imported, existing, empty, failed } = importCandidates(selected, options)
   let previewDone = false
-
-  for (const candidate of selected) {
-    if (findExistingSession(options.sessionsRoot, candidate.id)) {
-      existing.push(candidate)
-      continue
+  for (const entry of imported) {
+    const { candidate, events, path: written } = entry
+    if (options.apply) {
+      log(`  [写入] ${candidate.id}  ${candidate.cwd ?? '(无 cwd)'}  ${candidate.messageCount} 条消息 -> ${events.length} 事件 -> ${written}`)
+    } else {
+      log(`  [待导入] ${candidate.id}  ${candidate.cwd ?? '(无 cwd)'}  ${candidate.messageCount} 条消息 -> ${events.length} 事件`)
     }
-    try {
-      const messages = candidate.parsed.messages
-      if (messages.length === 0) {
-        empty.push(candidate)
-        continue
+    if (!previewDone && options.preview > 0) {
+      previewDone = true
+      log('  --- 事件预览 ---')
+      for (let i = 0; i < Math.min(events.length, options.preview); i++) {
+        log(`    [${i}] ${events[i].type}`)
       }
-      const sourceTitle = workbuddyTitle(messages)
-      const baseTitle = deriveImportTitle(sourceTitle, messages, undefined)
-      const title = options.titlePrefix !== undefined && baseTitle !== undefined
-        ? `${options.titlePrefix}${baseTitle}`
-        : baseTitle
-      // 注入上下文 → 会话开头的 system 消息。没有它，导入的会话能看不能聊：
-      // WorkBuddy 上游要求请求的第 1 条消息是系统提示词，否则以业务码 11128
-      // 拒绝（"首条消息不是系统提示词"）。
-      const events = toEvents(messages, { ...options, title }, candidate.parsed.header.injectedContext)
-      if (options.apply) {
-        const path = writeSession(options.sessionsRoot, {
-          id: candidate.id,
-          createdAt: candidate.createdAt ?? messages[0].time,
-          cwd: candidate.cwd,
-        }, events)
-        log(`  [写入] ${candidate.id}  ${candidate.cwd ?? '(无 cwd)'}  ${messages.length} 条消息 -> ${events.length} 事件 -> ${path}`)
-      } else {
-        log(`  [待导入] ${candidate.id}  ${candidate.cwd ?? '(无 cwd)'}  ${messages.length} 条消息 -> ${events.length} 事件`)
-      }
-      imported.push({ candidate, events })
-      if (!previewDone && options.preview > 0) {
-        previewDone = true
-        log('  --- 事件预览 ---')
-        for (let i = 0; i < Math.min(events.length, options.preview); i++) {
-          log(`    [${i}] ${events[i].type}`)
-        }
-      }
-    } catch (error) {
-      failed.push({ candidate, error })
-      log(`  [失败] ${candidate.id}: ${error.message}`)
     }
+  }
+  for (const entry of failed) {
+    log(`  [失败] ${entry.candidate.id}: ${entry.error}`)
   }
 
   log(`[workbuddy] 结果: 新导入 ${imported.length}，已存在跳过 ${existing.length}，空会话 ${empty.length}，失败 ${failed.length}`)

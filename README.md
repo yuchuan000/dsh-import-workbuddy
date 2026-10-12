@@ -75,6 +75,40 @@ DSH ($DSH_HOME/sessions)  →  重启后出现在会话列表
 
 ---
 
+## 图形界面：在 DSH 设置里导入 ⭐️
+
+装成 DSH 插件后，本项目会在 **DSH 设置 → WorkBuddy 导入** 里加一页可视化面板，
+不用敲命令行：
+
+- **列出**本机全部 WorkBuddy 会话（标题、工作目录、时间、消息数）
+- **勾选**要导入的内容，支持按标题 / 目录 / id **筛选**、一键「全选未导入」
+- **已导入的行会打上「已导入」标记且不可再勾选**（幂等，重复导入自动跳过）
+- 两个导入选项：**丢弃工具调用**（只留对话文本）、**工具调用转纯文本**
+- 导入完自动刷新侧边栏会话列表，并弹出结果横幅（新导入 / 已存在 / 空 / 失败）
+
+页面本身不碰文件系统：所有读写都走 host 半场的同源校验路由
+`/__dsh-import-workbuddy/*`，与命令行共用 `lib/import-core.mjs` 同一条管线，
+所以界面和终端不会走出两种结果。
+
+### 装成插件
+
+在 DSH profile 目录（`~/.dsh/profiles/desktop/`）里：
+
+```bash
+# 1) 依赖指向本地 vendor 副本（避免市场更新覆盖掉你的修改）
+npm pkg set dependencies.dsh-import-workbuddy=file:./vendor/dsh-import-workbuddy
+
+# 2) 加进 bundle 列表
+npm pkg set 'dsh.profile.bundles[5]=dsh-import-workbuddy'
+
+# 3) 把 src/ lib/ 等文件放到 vendor/dsh-import-workbuddy/ 下，并链接进 node_modules
+mklink /J node_modules\dsh-import-workbuddy vendor\dsh-import-workbuddy
+```
+
+**重启 DSH** 生效，设置里就会出现「WorkBuddy 导入」这一页。
+
+---
+
 ## 它解决什么问题
 
 WorkBuddy 的聊天记录存在本地，但**格式和 DSH 不兼容**，直接拷进去 DSH 读不出来。
@@ -293,9 +327,17 @@ node test/run.mjs select    # 只跑选择逻辑
 node test/run.mjs e2e       # 只跑端到端
 ```
 
-43 个用例，零测试框架依赖。端到端用例在**临时沙箱**里搭假的 WorkBuddy 源仓库
+92 个用例，零测试框架依赖。端到端用例在**临时沙箱**里搭假的 WorkBuddy 源仓库
 和假的 `$DSH_HOME`，真的 fork `import.mjs` 子进程跑完整流程，
 **绝不触碰你真实的 `~/.dsh` 和 `~/.workbuddy`**。
+
+| 套件 | 用例 | 覆盖 |
+|---|---|---|
+| `select` | 27 | 选择表达式解析、交互式勾选 |
+| `inproc` | 16 | reader → convert → writer 全链路 |
+| `host` | 17 | 设置页桥接路由（含同源/跨源护栏） |
+| `client` | 16 | 设置页渲染与交互（自研 90 行 hooks 运行时） |
+| `e2e` | 16 | 子进程端到端（环境不允许 fork 时自动跳过） |
 
 覆盖范围：
 
@@ -310,6 +352,12 @@ node test/run.mjs e2e       # 只跑端到端
 - 事件结构合法性（turn/step 配对、seq 连续）
 - 产物路径符合 `projectKey` 编码规则
 - 重复导入幂等、空会话识别
+- **host 路由**：按 id 精确导入、`exclude`、空选择是 no-op、选项真的生效、
+  方法不符 405、非 loopback Host / 跨源 Origin / `sec-fetch-site` 403、
+  坏 body 与坏选项 400
+- **设置页**：列表渲染、已导入行禁用勾选、全选未导入只选未导入的行、
+  筛选（标题 / 目录 / id）、导入只发送勾选的 id、选项传递、
+  拉取与导入失败都显示错误且保留选择、导入后刷新侧边栏
 
 ---
 

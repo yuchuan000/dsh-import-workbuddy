@@ -23,8 +23,11 @@
   },
   "homepage": "https://github.com/yuchuan000/dsh-import-workbuddy#readme",
   "type": "module",
-  "main": "import.mjs",
+  "main": "src/index.js",
   "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./core": "./lib/import-core.mjs",
     "./reader": "./lib/workbuddy-reader.mjs",
     "./package.json": "./package.json"
   },
@@ -39,12 +42,26 @@
     "attach:apply": "node attach-workspaces.mjs --apply",
     "test": "node test/run.mjs"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  },
   "files": [
+    "src/",
     "lib/",
     "test/",
     "import.mjs",
     "export.mjs",
     "attach-workspaces.mjs",
+    "cordis.patch.yml",
     "README.md",
     "LICENSE"
   ]

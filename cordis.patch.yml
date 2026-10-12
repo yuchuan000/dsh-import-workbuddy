@@ -1,0 +1,8 @@
+# dsh-import-workbuddy bundle layer.
+#
+# Inserts the plugin row into the profile's loader tree. The row id is stable so
+# re-installs and profile patches can target it; `name` must equal the package
+# name so the market's bundle reconciliation can match the dependency.
+- insert:
+    - id: import-workbuddy
+      name: 'dsh-import-workbuddy'
