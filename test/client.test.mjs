@@ -186,17 +186,41 @@ function checkbox(view, rowText) {
 
 function textInput(view) { return hosts(view, n => n.type === 'input' && n.props.type === 'text')[0] }
 
-/** 归属方式下拉。 */
-function selectBox(view) { return hosts(view, n => n.type === 'select')[0] }
-
-/** 下拉里所有 option 的 value。 */
-function optionValues(view) {
-  const box = selectBox(view)
-  if (box === undefined) return []
-  return collect(box)
-    .filter(n => n.kind === 'host' && n.type === 'option')
-    .map(n => n.props.value)
+/** 标签按钮，按 data-tab 取。别按文案找：标签名和页内文案是同一批词。 */
+function tabButton(view, name) {
+  return hosts(view, n => n.type === 'button' && n.props?.['data-tab'] === name)[0]
 }
+const tabText = (view, name) => text(tabButton(view, name))
+
+/** 配置弹窗的子树（Modal 桩渲出的宿主元素）。 */
+function configModal(view) {
+  return hosts(view, n => n.props?.['data-modal'] !== undefined).at(-1)
+}
+/**
+ * 弹窗里的节点。
+ *
+ * 必须限定在弹窗内：列表底部的分页器也有一个 select，树级查询会取到它，
+ * 断言就会读到「每页 50」而不是归属方式。
+ */
+function inModal(view, predicate) {
+  const box = configModal(view)
+  if (box === undefined) return []
+  return collect(box).filter(n => n.kind === 'host' && predicate(n))
+}
+const modalSelect = (view) => inModal(view, n => n.type === 'select')[0]
+function modalCheckbox(view, rowText) {
+  const row = inModal(view, n => n.type === 'label' && text(n).includes(rowText)).at(-1)
+  if (row === undefined) return undefined
+  return collect(row).find(n => n.kind === 'host' && n.type === 'input')
+}
+const optionValuesOf = (node) => (node === undefined ? [] : collect(node)
+  .filter(n => n.kind === 'host' && n.type === 'option')
+  .map(n => n.props.value))
+
+/** 打开配置弹窗（页面上的「配置」按钮）。 */
+async function openConfig(view) { await click(view, button(view, '配置')) }
+/** 关掉配置弹窗（弹窗底部的「关闭」）。 */
+async function closeConfig(view) { await click(view, inModal(view, n => n.type === 'button' && text(n).includes('关闭')).at(-1)) }
 
 /** 找到包含指定文字的 label 行里的徽章文本数组。 */
 function rowBadges(view, rowText) {
@@ -231,9 +255,14 @@ function loadBundle() {
     requested.push(id)
     if (id === 'react') return React
     if (id === '@deepseek-ai/dsh-client-ui-primitives') {
-      // 真实 Toast 是 portal 宿主；这里用宿主元素接住同样的 props，
-      // 好让断言能把横幅文案读回来。
-      return { Toast: (props) => createElement('div', { 'data-toast': '1', ...props }) }
+      return {
+        // 真实 Toast 是 portal 宿主；这里用宿主元素接住同样的 props，
+        // 好让断言能把横幅文案读回来。
+        Toast: (props) => createElement('div', { 'data-toast': '1', ...props }),
+        // 真实 Modal 也是 portal 宿主，body 走 children、按钮走 footer；
+        // 两半都接住，测试才点得到配置弹窗里的控件。
+        Modal: (props) => createElement('div', { 'data-modal': props.title ?? '' }, [props.children, props.footer]),
+      }
     }
     throw new Error(`unexpected require: ${id}`)
   }
@@ -271,14 +300,17 @@ function runApply(bundle, services = {}) {
 }
 
 /**
- * 把设置页与 toast 浮层挂在同一棵树里：toast 状态是模块级共享的，
- * 分开挂载就断言不到横幅了。
+ * 把设置页与全部浮层挂在同一棵树里：toast 与配置弹窗的状态都是模块级共享的，
+ * 分开挂载就断言不到横幅，也点不到弹窗。
  */
 function mountPage(bundle, services) {
   const applied = runApply(bundle, services)
   const panel = applied.pick('settings.section')[0].component
-  const toastHost = applied.pick('shell.overlay')[0].component
-  const page = () => createElement('div', {}, [createElement(panel, {}), createElement(toastHost, {})])
+  const overlays = applied.pick('shell.overlay').map(entry => entry.component)
+  const page = () => createElement('div', {}, [
+    createElement(panel, {}),
+    ...overlays.map((overlay, index) => createElement(overlay, { key: index })),
+  ])
   return { view: mount(page), applied }
 }
 
@@ -396,7 +428,7 @@ export async function run() {
     if (typeof bundle.entry.factory !== 'function') throw new Error('factory 必须是函数')
   })
 
-  check('apply 注册 settings.section 与 shell.overlay', () => {
+  check('apply 注册 settings.section 与两个浮层（toast + 配置弹窗）', () => {
     const applied = runApply(loadBundle())
     const settings = applied.pick('settings.section')
     const overlay = applied.pick('shell.overlay')
@@ -404,7 +436,10 @@ export async function run() {
     if (settings[0].id !== 'import-workbuddy-settings') throw new Error(`id: ${settings[0].id}`)
     if (typeof settings[0].label !== 'function') throw new Error('label 必须是函数（跟随语言切换）')
     if (!settings[0].label().includes('WorkBuddy')) throw new Error(`导航名: ${settings[0].label()}`)
-    if (overlay.length !== 1) throw new Error(`应注册一个 toast 浮层，实际 ${overlay.length}`)
+    const ids = overlay.map(entry => entry.id).sort()
+    if (ids.join(',') !== 'import-workbuddy-config,import-workbuddy-toast') {
+      throw new Error(`浮层应是 toast 与配置弹窗，实际 ${ids.join(',') || '(空)'}`)
+    }
   })
 
   check('factory 只 require react 与 primitives', () => {
@@ -431,7 +466,19 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('列表渲染全部会话，并给已导入的行打徽章', async () => {
+  await checkAsync('页面顶部是标签条：两栏各报条数 + 配置按钮', async () => {
+    globalThis.fetch = fakeFetch().impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      if (tabText(view, 'pending') !== '待导入2') throw new Error(`待导入栏应报 2：${tabText(view, 'pending')}`)
+      if (tabText(view, 'imported') !== '已导入1') throw new Error(`已导入栏应报 1：${tabText(view, 'imported')}`)
+      if (tabButton(view, 'pending').props['aria-selected'] !== true) throw new Error('默认停在待导入')
+      if (button(view, '配置') === undefined) throw new Error('标签条右侧应有配置按钮')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('默认栏只列待导入，已导入的行在另一个栏里', async () => {
     globalThis.fetch = fakeFetch().impl
     try {
       const { view } = mountPage(loadBundle())
@@ -439,14 +486,19 @@ export async function run() {
       const body = text(view.tree())
       if (!body.includes('修一个导入 bug')) throw new Error('应显示会话标题')
       if (!body.includes('写一个可视化页面')) throw new Error('应显示第二个会话')
-      if (!body.includes('共 3 个会话，其中 1 个已导入')) throw new Error(`统计行: ${body.slice(0, 200)}`)
-      if (!body.includes('已导入')) throw new Error('应显示已导入徽章')
-
-      const box = checkbox(view, '已经导过的会话')
-      if (box === undefined) throw new Error('已导入行应有 checkbox')
+      if (body.includes('已经导过的会话')) throw new Error('已导入的行不该出现在待导入栏')
+      if (!body.includes('共 2 个会话')) throw new Error(`页脚应报当前栏的条数: ${body.slice(0, 240)}`)
 
       const pending = checkbox(view, '修一个导入 bug')
+      if (pending === undefined) throw new Error('待导入行应有 checkbox')
       if (pending.props.disabled !== false) throw new Error('未导入的行应可勾选')
+
+      // 切到已导入栏：那一条在这儿，带自己的徽章。
+      await click(view, tabButton(view, 'imported'))
+      if (!text(view.tree()).includes('已经导过的会话')) throw new Error('已导入栏应列出已导入的会话')
+      if (!rowBadges(view, '已经导过的会话').includes('已导入')) throw new Error('应显示已导入徽章')
+      if (checkbox(view, '已经导过的会话') === undefined) throw new Error('已导入行应有 checkbox')
+      if (text(view.tree()).includes('修一个导入 bug')) throw new Error('待导入的行不该出现在已导入栏')
     } finally { globalThis.fetch = realFetch }
   })
 
@@ -457,18 +509,23 @@ export async function run() {
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
+      await click(view, tabButton(view, 'imported'))
       const box = checkbox(view, '已经导过的会话')
       if (box.props.disabled !== false) throw new Error('已导入的行应可勾选（回写/还原的目标）')
 
       await change(view, box, { checked: true })
-      if (button(view, '导入所选（0）') === undefined) {
-        throw new Error(`勾选已导入的行不应计入导入: ${text(view.tree()).slice(0, 300)}`)
-      }
-      if (button(view, '导入所选（0）').props.disabled !== true) throw new Error('没有可导入的行时按钮应禁用')
+      // 已导入栏里不该有导入按钮：这一栏没有可导入的东西。
+      if (button(view, '导入所选') !== undefined) throw new Error('已导入栏不该出现导入按钮')
       // 但回写按钮应当出现 —— 这正是勾选它的意义。
       if (button(view, '回写所选（1）') === undefined) {
         throw new Error(`勾选已导入且可回写的行应出现回写按钮: ${text(view.tree()).slice(0, 300)}`)
       }
+      // 回到待导入栏：这一勾不算进导入（它已经在了），导入按钮仍是 0。
+      await click(view, tabButton(view, 'pending'))
+      if (button(view, '导入所选（0）') === undefined) {
+        throw new Error(`勾选已导入的行不应计入导入: ${text(view.tree()).slice(0, 300)}`)
+      }
+      if (button(view, '导入所选（0）').props.disabled !== true) throw new Error('没有可导入的行时按钮应禁用')
     } finally { globalThis.fetch = realFetch }
   })
 
@@ -490,15 +547,16 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('全选未导入 只选未导入的行', async () => {
+  await checkAsync('全选本页 只选本页的待导入行', async () => {
     globalThis.fetch = fakeFetch().impl
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      await click(view, button(view, '全选未导入'))
+      await click(view, button(view, '全选本页'))
       if (button(view, '导入所选（2）') === undefined) {
-        throw new Error(`3 个里 1 个已导入，全选应得 2: ${text(view.tree()).slice(0, 300)}`)
+        throw new Error(`本页 2 个待导入，全选应得 2: ${text(view.tree()).slice(0, 300)}`)
       }
+      if (!text(view.tree()).includes('已选 2 条')) throw new Error('工具栏应报出选中条数')
       await click(view, button(view, '清空选择'))
       if (button(view, '导入所选（0）') === undefined) throw new Error('再次点击应清空')
     } finally { globalThis.fetch = realFetch }
@@ -531,15 +589,19 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('导入选项会传给 host', async () => {
+  await checkAsync('导入选项在配置弹窗里，改完会传给 host', async () => {
     const fetch = fakeFetch()
     globalThis.fetch = fetch.impl
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
+      // 选项已经不在页面上：勾选框只出现在配置弹窗里。
+      if (checkbox(view, '丢弃工具调用') !== undefined) throw new Error('选项不该出现在页面上')
+      await openConfig(view)
+      await change(view, modalCheckbox(view, '丢弃工具调用'), { checked: true })
+      await change(view, modalCheckbox(view, '工具调用转纯文本'), { checked: true })
+      await closeConfig(view)
       await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
-      await change(view, checkbox(view, '丢弃工具调用'), { checked: true })
-      await change(view, checkbox(view, '工具调用转纯文本'), { checked: true })
       await click(view, button(view, '导入所选（1）'))
       const post = fetch.calls.find(c => c.method === 'POST')
       if (post.body.options.noTools !== true) throw new Error('应传 noTools=true')
@@ -609,7 +671,7 @@ export async function run() {
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      await click(view, button(view, '全选未导入'))
+      await click(view, button(view, '全选本页'))
       await click(view, button(view, '导入所选（2）'))
       if (!text(view.tree()).includes('overrun')) throw new Error('应显示失败原因')
     } finally { globalThis.fetch = realFetch }
@@ -617,25 +679,32 @@ export async function run() {
 
   // --- 归属模式 ---------------------------------------------------------------
 
-  await checkAsync('模式下拉三选一，默认 copy，提示随选择变化', async () => {
+  await checkAsync('配置弹窗：归属方式三选一，默认 copy，提示随选择变化', async () => {
     globalThis.fetch = fakeFetch().impl
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      const box = selectBox(view)
-      if (box === undefined) throw new Error('应有归属方式下拉')
-      const values = optionValues(view)
+      await openConfig(view)
+      const box = modalSelect(view)
+      if (box === undefined) throw new Error('弹窗里应有归属方式下拉')
+      const values = optionValuesOf(box)
       if (values.join(',') !== 'copy,adopt,sync') throw new Error(`下拉选项: ${values.join(',')}`)
       if (box.props.value !== 'copy') throw new Error('默认应是 copy（与既有行为一致）')
-      if (!text(view.tree()).includes('只读 WorkBuddy 的会话')) throw new Error('默认应显示 copy 的说明')
+      if (!text(configModal(view)).includes('只读 WorkBuddy 的会话')) throw new Error('默认应显示 copy 的说明')
 
-      await change(view, box, { value: 'adopt' })
-      const body = text(view.tree())
+      await change(view, modalSelect(view), { value: 'adopt' })
+      const body = text(configModal(view))
       if (!body.includes('归档到 DSH')) throw new Error(`切到 adopt 后应显示接管说明: ${body.slice(0, 300)}`)
       if (body.includes('只读 WorkBuddy 的会话')) throw new Error('不应再显示 copy 的说明')
 
-      await change(view, selectBox(view), { value: 'sync' })
-      if (!text(view.tree()).includes('保留 WorkBuddy 原会话')) throw new Error('切到 sync 后应显示同步说明')
+      await change(view, modalSelect(view), { value: 'sync' })
+      if (!text(configModal(view)).includes('保留 WorkBuddy 原会话')) throw new Error('切到 sync 后应显示同步说明')
+
+      // 页面上那一行要把当下的选择说出来：弹窗关掉之后它只能靠这行。
+      await closeConfig(view)
+      if (!text(view.tree()).includes('导入方式：同步')) {
+        throw new Error(`页面上应复述当前方式: ${text(view.tree()).slice(0, 300)}`)
+      }
     } finally { globalThis.fetch = realFetch }
   })
 
@@ -645,7 +714,9 @@ export async function run() {
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      await change(view, selectBox(view), { value: 'adopt' })
+      await openConfig(view)
+      await change(view, modalSelect(view), { value: 'adopt' })
+      await closeConfig(view)
       await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
       await click(view, button(view, '导入所选（1）'))
       const post = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/import'))
@@ -660,10 +731,14 @@ export async function run() {
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      await change(view, selectBox(view), { value: 'adopt' })
+      await openConfig(view)
+      await change(view, modalSelect(view), { value: 'adopt' })
+      await closeConfig(view)
       await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
       await click(view, button(view, '导入所选（1）'))
 
+      // 导进来的行离开了待导入栏，接管过的还会多一个徽章 —— 那些在另一栏里看。
+      await click(view, tabButton(view, 'imported'))
       const badges = rowBadges(view, '修一个导入 bug')
       if (!badges.includes('已接管')) throw new Error(`接管后应有已接管徽章: ${badges.join(',')}`)
 
@@ -676,7 +751,9 @@ export async function run() {
       const post = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/restore'))
       if (post === undefined) throw new Error('应发起还原请求')
       if (post.body.ids.join(',') !== 'wb-aaa') throw new Error(`还原目标: ${post.body.ids.join(',')}`)
-      // 还原成功后徽章应当消失（假 fetch 已把 adopted 置回 false）
+      // 还原成功后它回到待导入栏（假 fetch 已把 adopted 置回 false）。
+      await click(view, tabButton(view, 'pending'))
+      if (!text(view.tree()).includes('修一个导入 bug')) throw new Error('还原后应回到待导入栏')
       if (rowBadges(view, '修一个导入 bug').includes('已接管')) throw new Error('还原后不应还显示已接管')
     } finally { globalThis.fetch = realFetch }
   })
@@ -690,7 +767,7 @@ export async function run() {
       if (!rowBadges(view, '我早就删掉的会话').includes('已删除')) throw new Error('徽章应在已删除的那一行上')
       if (!text(view.tree()).includes('你在 WorkBuddy 里已经删过')) throw new Error('应解释这个标记的含义')
 
-      await click(view, button(view, '全选未导入'))
+      await click(view, button(view, '全选本页'))
       const importBtn = button(view, '导入所选（1）')
       if (importBtn === undefined) {
         throw new Error(`全选应跳过已删除的，只选 1 个: ${text(view.tree()).slice(0, 300)}`)
@@ -719,9 +796,10 @@ export async function run() {
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      // 先勾一个未导入的：它不能进回写目标。
+      // 先勾一个未导入的：它不能进回写目标，虽然它这一勾会被记住。
       await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
-      if (button(view, '回写所选（1）') !== undefined) throw new Error('未导入的行不该出现在回写目标里')
+      await click(view, tabButton(view, 'imported'))
+      if (button(view, '回写所选（0）') !== undefined) throw new Error('未导入的行不该出现在回写目标里')
 
       await change(view, checkbox(view, '已经导过的会话'), { checked: true })
       const syncBtn = button(view, '回写所选（1）')
@@ -746,6 +824,7 @@ export async function run() {
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
+      await click(view, tabButton(view, 'imported'))
       if (!rowBadges(view, '已搬到 DSH 的会话').includes('已接管')) throw new Error('应有已接管徽章')
       await change(view, checkbox(view, '已搬到 DSH 的会话'), { checked: true })
       if (button(view, '回写所选（1）') !== undefined) throw new Error('已归档的源文件不能再回写')
@@ -767,7 +846,9 @@ export async function run() {
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      await change(view, selectBox(view), { value: 'adopt' })
+      await openConfig(view)
+      await change(view, modalSelect(view), { value: 'adopt' })
+      await closeConfig(view)
       await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
       await click(view, button(view, '导入所选（1）'))
       const body = text(view.tree())
@@ -795,9 +876,15 @@ export async function run() {
       const { view } = mountPage(loadBundle(), {})
       await view.settle()
       const body = text(view.tree())
-      if (!body.includes('共 3 个会话，其中 1 个已导入')) throw new Error(`占位符应插值: ${body.slice(0, 200)}`)
-      if (body.includes('{n}')) throw new Error('不应残留未插值的占位符')
-      if (body.includes('{root}')) throw new Error('root 占位符也应插值')
+      if (!body.includes('共 2 个会话')) throw new Error(`占位符应插值: ${body.slice(0, 240)}`)
+      if (!body.includes('导入方式：拷贝（保留原会话）')) throw new Error(`计划行应插值: ${body.slice(0, 240)}`)
+      if (body.includes('{n}') || body.includes('{mode}')) throw new Error('不应残留未插值的占位符')
+
+      // 源目录在配置弹窗里，占位符同样要插值。
+      await openConfig(view)
+      const dialog = text(configModal(view))
+      if (!dialog.includes('C:\\Users\\USER\\.workbuddy')) throw new Error(`root 应插值: ${dialog.slice(0, 240)}`)
+      if (dialog.includes('{root}')) throw new Error('root 占位符也应插值')
     } finally { globalThis.fetch = realFetch }
   })
 

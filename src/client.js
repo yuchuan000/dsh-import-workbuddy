@@ -19,13 +19,23 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const React = require('react')
     const { useCallback, useEffect, useState } = React
-    const { Toast } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const { Modal, Toast } = require('@deepseek-ai/dsh-client-ui-primitives')
 
     const PREFIX = '/__dsh-import-workbuddy'
     const SETTINGS_SLOT = 'settings.section'
     const OVERLAY_SLOT = 'shell.overlay'
     const SETTINGS_ID = 'import-workbuddy-settings'
     const TOAST_ID = 'import-workbuddy-toast'
+    // The import policy, moved off the page and behind a button, exactly as in
+    // dsh-session-recycle's settings page: the list is the reason to open this
+    // page, and a form above it pushes the list below the fold.
+    const CONFIG_ID = 'import-workbuddy-config'
+    // The two lists as tabs on one section. They are the same candidates read
+    // two ways — what is still to come across, and what already has — and the
+    // actions differ per tab (import vs sync back / put back), so a tab that
+    // names the state keeps each toolbar to the verb that fits it.
+    const TAB_PENDING = 'pending'
+    const TAB_IMPORTED = 'imported'
 
     // --- locale -----------------------------------------------------------------
 
@@ -33,17 +43,37 @@ window.__ModuleLoader__.load({
 
     const zh = {
       'settings.nav': 'WorkBuddy 导入',
+      'settings.tabsLabel': '导入页签',
+      'settings.tabPending': '待导入',
+      'settings.tabImported': '已导入',
+      'settings.tabCount': '共 {n} 条',
+      'settings.config': '配置',
+      'settings.configTitle': '导入设置',
+      'settings.configDesc': '这里的改动立即生效，关掉即生效完毕。',
+      'settings.close': '关闭',
       'settings.desc': '把本机 WorkBuddy（腾讯 CodeBuddy）的会话导入 DSH，成为可继续对话的原生会话。勾选要导入的内容，重复导入会自动跳过。',
+      'settings.importedHint': '已经在 DSH 里的会话。勾选可以把 DSH 这边新产生的对话回写进 WorkBuddy 原会话；接管过来的还可以还原回去。',
+      'settings.plan': '导入方式：{mode}｜工具调用：{tools}',
+      'settings.planTools.keep': '保留',
+      'settings.planTools.text': '转为纯文本',
+      'settings.planTools.drop': '丢弃',
       'settings.root': 'WorkBuddy 目录：{root}',
-      'settings.candidates': '共 {n} 个会话，其中 {done} 个已导入',
       'settings.filter': '筛选（标题 / 目录 / id）',
-      'settings.selectAll': '全选未导入',
+      'settings.selectPage': '全选本页',
       'settings.selectNone': '清空选择',
       'settings.refresh': '刷新列表',
+      'settings.count': '共 {n} 个会话',
+      'settings.pagePosition': '第 {page}/{pages} 页',
+      'settings.pagerPrev': '上一页',
+      'settings.pagerNext': '下一页',
+      'settings.pageSize': '每页',
       'settings.import': '导入所选（{n}）',
       'settings.importing': '正在导入…',
       'settings.loading': '正在读取 WorkBuddy 会话…',
       'settings.empty': '没有发现可导入的 WorkBuddy 会话。',
+      'settings.emptyImported': '还没有导入过的会话。',
+      'settings.filterEmpty': '没有符合条件的会话。',
+      'batch.selected': '已选 {n} 条',
       'settings.badgeDone': '已导入',
       'settings.badgeDeleted': '已删除',
       'settings.badgeAdopted': '已接管',
@@ -85,17 +115,37 @@ window.__ModuleLoader__.load({
 
     const en = {
       'settings.nav': 'WorkBuddy import',
+      'settings.tabsLabel': 'Import page tabs',
+      'settings.tabPending': 'Pending',
+      'settings.tabImported': 'Imported',
+      'settings.tabCount': '{n} entries',
+      'settings.config': 'Settings',
+      'settings.configTitle': 'Import settings',
+      'settings.configDesc': 'Every change here applies immediately — just close this when you are done.',
+      'settings.close': 'Close',
       'settings.desc': 'Import local WorkBuddy (Tencent CodeBuddy) conversations into DSH as native, resumable sessions. Tick what you want; re-importing skips automatically.',
+      'settings.importedHint': 'Conversations already in DSH. Tick one to write later turns in DSH back to the WorkBuddy original; anything adopted can also be put back.',
+      'settings.plan': 'Import as: {mode} · Tool calls: {tools}',
+      'settings.planTools.keep': 'kept',
+      'settings.planTools.text': 'as plain text',
+      'settings.planTools.drop': 'dropped',
       'settings.root': 'WorkBuddy root: {root}',
-      'settings.candidates': '{n} conversations, {done} already imported',
       'settings.filter': 'Filter (title / folder / id)',
-      'settings.selectAll': 'Select all pending',
+      'settings.selectPage': 'Select page',
       'settings.selectNone': 'Clear selection',
       'settings.refresh': 'Refresh',
+      'settings.count': '{n} conversation(s)',
+      'settings.pagePosition': 'Page {page} of {pages}',
+      'settings.pagerPrev': 'Previous',
+      'settings.pagerNext': 'Next',
+      'settings.pageSize': 'Per page',
       'settings.import': 'Import selected ({n})',
       'settings.importing': 'Importing…',
       'settings.loading': 'Reading WorkBuddy conversations…',
       'settings.empty': 'No importable WorkBuddy conversations found.',
+      'settings.emptyImported': 'Nothing has been imported yet.',
+      'settings.filterEmpty': 'Nothing matches the filter.',
+      'batch.selected': '{n} selected',
       'settings.badgeDone': 'Imported',
       'settings.badgeDeleted': 'Deleted',
       'settings.badgeAdopted': 'Adopted',
@@ -312,6 +362,65 @@ window.__ModuleLoader__.load({
       })
     }
 
+    // --- module-level state ----------------------------------------------------------
+    //
+    // Both cells live here rather than in the page for the same reason: the
+    // settings dialog and the toast are *overlay* entries, so the page cannot
+    // hand them props. In the session-recycle plugin the equivalent cell holds
+    // the dialog's open flag only, because its prefs live on the host; here the
+    // import policy is client-side (it is sent per request), so it lives here
+    // too — and the page that reads it re-renders off the same subscription.
+
+    const configState = { open: false, listeners: new Set() }
+
+    /**
+     * Subscribe to anything either cell changes.
+     *
+     * One listener set for both: the page cares about either change the same way
+     * (re-render), and the dialog is the only thing that writes them, so keeping
+     * two ledgers would just be two ways to forget one of them.
+     */
+    function configSubscribe(listener) {
+      configState.listeners.add(listener)
+      return () => { configState.listeners.delete(listener) }
+    }
+
+    function notifyConfig() {
+      for (const listener of [...configState.listeners]) {
+        try { listener() } catch { /* a broken subscriber never blocks others */ }
+      }
+    }
+
+    function setConfigOpen(open) {
+      if (configState.open === open) return
+      configState.open = open
+      notifyConfig()
+    }
+
+    /**
+     * How a session comes across, and what happens to its tool calls.
+     *
+     * Defaults are the plugin's long-standing behaviour: copy (the source file
+     * is never touched) and keep tool calls as cards.
+     */
+    const importOptions = { mode: 'copy', noTools: false, toolsAsText: false }
+
+    function setOption(key, value) {
+      if (importOptions[key] === value) return
+      importOptions[key] = value
+      notifyConfig()
+    }
+
+    /**
+     * Where the page is reading from, for the dialog to quote.
+     *
+     * The page writes it on every read and the dialog reads it when it renders:
+     * no subscription, because the write always lands before the dialog can be
+     * opened, and a dialog left open across a re-read is showing a path that
+     * does not change.
+     */
+    const sourceInfo = { root: '' }
+
     // --- styles ---------------------------------------------------------------------
     //
     // Theme tokens only, with the same fallbacks the host's own panels use, so
@@ -379,6 +488,112 @@ window.__ModuleLoader__.load({
       ...rowStyle,
       borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
     }
+    const ghostBtnOffStyle = { ...ghostBtnStyle, opacity: 0.5, cursor: 'default' }
+    const toolbarStyle = {
+      display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
+      padding: '6px 0 8px',
+      borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
+    }
+    const filterInputStyle = {
+      flex: '1 1 180px', minWidth: 140, padding: '5px 10px',
+      fontSize: 12, borderRadius: 8,
+      border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4))',
+      background: 'transparent', color: 'var(--dsw-alias-label-primary, inherit)',
+    }
+
+    // --- tab strip --------------------------------------------------------------
+    //
+    // Same shape as the session-recycle page's strip: the open tab is marked
+    // with a rule on the shared baseline rather than a filled pill, because a
+    // second filled surface would compete with the list right below it.
+
+    const tabStripStyle = {
+      display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
+      paddingBottom: 0,
+      borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
+    }
+    const tabListStyle = {
+      display: 'flex', alignItems: 'center', gap: 2,
+      flex: '1 1 auto', minWidth: 0,
+    }
+    const tabBaseStyle = {
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '6px 10px', marginBottom: -1, borderRadius: '6px 6px 0 0',
+      border: 'none', borderBottom: '2px solid transparent',
+      background: 'transparent', cursor: 'pointer',
+      fontSize: 13, lineHeight: '20px',
+      color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
+    }
+    /** The open tab: same shape as the idle one, marked rather than disabled. */
+    const tabOnStyle = {
+      ...tabBaseStyle, fontWeight: 600,
+      color: 'var(--dsw-alias-label-primary, inherit)',
+      borderBottomColor: 'var(--dsw-alias-interactive-bg-primary, #3b82f6)',
+    }
+    /** How much a list is holding — quiet, so it does not outrank the label. */
+    const tabBadgeStyle = {
+      display: 'inline-block', padding: '0 6px', borderRadius: 8,
+      fontSize: 11, lineHeight: '16px',
+      background: 'var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
+      color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
+    }
+
+    // --- dialog rows ---------------------------------------------------------------
+
+    const settingLabelStyle = { display: 'block', fontSize: 13, lineHeight: '20px' }
+    const settingHintStyle = {
+      display: 'block', fontSize: 12, lineHeight: '18px', marginTop: 2,
+      color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
+    }
+    const settingRowStyle = {
+      display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 0',
+    }
+    const separatorStyle = {
+      height: 1, margin: '12px 0 4px',
+      background: 'var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
+    }
+
+    // --- pager -------------------------------------------------------------------
+    //
+    // The candidate list grows with the WorkBuddy store, so it is paged rather
+    // than left to run off the bottom of the modal. Paging also gives "select
+    // all" a meaning the user can see: the rows in front of them.
+    //
+    // The page size is a local preference (localStorage), not host state: how
+    // many rows fit on a screen is a property of the screen.
+
+    const PAGE_SIZE_KEY = 'import-workbuddy:pageSize'
+    const PAGE_SIZES = [20, 50, 100, 200]
+    const DEFAULT_PAGE_SIZE = 50
+
+    function readPageSize() {
+      try {
+        const value = Number(window.localStorage?.getItem(PAGE_SIZE_KEY))
+        if (PAGE_SIZES.includes(value)) return value
+      } catch { /* no storage (private mode) — the default stands */ }
+      return DEFAULT_PAGE_SIZE
+    }
+
+    function writePageSize(value) {
+      try { window.localStorage?.setItem(PAGE_SIZE_KEY, String(value)) } catch { /* preference only */ }
+    }
+
+    const pagerStyle = {
+      display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6,
+      marginTop: 8, paddingTop: 8,
+      borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
+    }
+    /** The current page's button: same shape, marked rather than disabled. */
+    const pagerPageOnStyle = {
+      ...ghostBtnStyle, fontWeight: 600,
+      borderColor: 'var(--dsw-alias-interactive-bg-primary, #3b82f6)',
+      color: 'var(--dsw-alias-interactive-bg-primary, #3b82f6)',
+    }
+    const pageSizeSelectStyle = {
+      padding: '3px 6px', fontSize: 12, borderRadius: 6,
+      border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4))',
+      background: 'transparent', color: 'var(--dsw-alias-label-primary, inherit)',
+    }
 
     function formatTime(value) {
       if (typeof value !== 'number' || !Number.isFinite(value)) return ''
@@ -418,30 +633,275 @@ window.__ModuleLoader__.load({
     // --- the page --------------------------------------------------------------------
 
     /**
+     * The page numbers to render, with '…' where the run is broken.
+     *
+     * The first and last pages and the current one (plus its neighbours) are
+     * always reachable: a pager that only ever shows 1 2 3 cannot tell you that
+     * you are on page 40 of 60.
+     *
+     * @param page - zero-based current page.
+     * @param pageCount - total pages, at least 1.
+     * @returns 1-based page numbers with the string '…' between runs.
+     */
+    function pageWindow(page, pageCount) {
+      const last = pageCount - 1
+      const wanted = new Set([0, 1, last - 1, last, page - 1, page, page + 1])
+      const indexes = [...wanted]
+        .filter(index => index >= 0 && index <= last)
+        .sort((a, b) => a - b)
+      const out = []
+      let previous = -1
+      for (const index of indexes) {
+        if (previous >= 0 && index - previous > 1) out.push('…')
+        out.push(index + 1)
+        previous = index
+      }
+      return out
+    }
+
+    /** The list footer: how many rows, which page, and how many per page. */
+    function Pager(props) {
+      const __ = props.__ || t
+      const { page, pageCount, total, pageSize, onPage, onPageSize } = props
+      const children = [
+        React.createElement('span', {
+          key: 'count', style: { ...metaStyle, margin: 0 },
+        }, __('settings.count', { n: total })),
+      ]
+      // With one page there is nothing to navigate; the count and the size
+      // selector still belong to the footer, so only the buttons drop out.
+      if (pageCount > 1) {
+        children.push(React.createElement('span', {
+          key: 'pos', style: { ...metaStyle, margin: 0 },
+        }, __('settings.pagePosition', { page: page + 1, pages: pageCount })))
+        children.push(React.createElement('button', {
+          key: 'prev', type: 'button',
+          style: page <= 0 ? ghostBtnOffStyle : ghostBtnStyle,
+          disabled: page <= 0,
+          onClick: () => onPage(page - 1),
+        }, __('settings.pagerPrev')))
+        pageWindow(page, pageCount).forEach((token, index) => {
+          if (token === '…') {
+            children.push(React.createElement('span', {
+              key: `gap${index}`, style: { ...metaStyle, margin: 0, padding: '0 2px' },
+            }, '…'))
+            return
+          }
+          const target = token - 1
+          children.push(React.createElement('button', {
+            key: `p${token}`, type: 'button',
+            'aria-current': target === page ? 'page' : undefined,
+            style: target === page ? pagerPageOnStyle : ghostBtnStyle,
+            onClick: () => onPage(target),
+          }, String(token)))
+        })
+        children.push(React.createElement('button', {
+          key: 'next', type: 'button',
+          style: page >= pageCount - 1 ? ghostBtnOffStyle : ghostBtnStyle,
+          disabled: page >= pageCount - 1,
+          onClick: () => onPage(page + 1),
+        }, __('settings.pagerNext')))
+      }
+      if (total > 0) {
+        children.push(React.createElement('span', {
+          key: 'sizeLabel', style: { ...metaStyle, margin: 0, marginLeft: 'auto' },
+        }, __('settings.pageSize')))
+        children.push(React.createElement('select', {
+          key: 'size',
+          value: String(pageSize),
+          style: pageSizeSelectStyle,
+          'aria-label': __('settings.pageSize'),
+          onChange: (event) => onPageSize(Number(event.target.value)),
+        }, PAGE_SIZES.map(size => React.createElement('option', {
+          key: size, value: String(size),
+        }, String(size)))))
+      }
+      return React.createElement('div', { style: pagerStyle }, children)
+    }
+
+    /**
+     * The slice of `rows` the current page shows, clamping a page that the
+     * current filter or an import has left past the end.
+     *
+     * @returns { rows, page, pageCount } — `page` is zero-based and always in
+     *   range, so callers can feed it straight back to the pager.
+     */
+    function paginate(rows, page, pageSize) {
+      const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
+      const safe = Math.min(Math.max(page, 0), pageCount - 1)
+      const start = safe * pageSize
+      return { rows: rows.slice(start, start + pageSize), page: safe, pageCount }
+    }
+
+    /**
+     * The page's tab strip: the candidate list in its two states, plus the
+     * Configure button.
+     *
+     * The badge says how many rows each side is holding — the one number that
+     * decides whether crossing over is worth a click. Both are known as soon as
+     * the first read lands, so unlike the session-recycle strip there is nothing
+     * to fetch here; they are simply withheld while that read is in flight, so
+     * the strip never claims a zero it is about to contradict.
+     */
+    function ImportTabs(props) {
+      const __ = props.__ || t
+      const tabs = [
+        { id: TAB_PENDING, label: __('settings.tabPending'), count: props.pending },
+        { id: TAB_IMPORTED, label: __('settings.tabImported'), count: props.imported },
+      ]
+      return React.createElement('div', { style: tabStripStyle }, [
+        React.createElement('div', {
+          key: 'list',
+          role: 'tablist',
+          'aria-label': __('settings.tabsLabel'),
+          style: tabListStyle,
+        }, tabs.map(tab => {
+          const on = props.tab === tab.id
+          return React.createElement('button', {
+            key: tab.id,
+            type: 'button',
+            role: 'tab',
+            'data-tab': tab.id,
+            'aria-selected': on,
+            style: on ? tabOnStyle : tabBaseStyle,
+            onClick: () => props.onTab?.(tab.id),
+          }, [
+            React.createElement('span', { key: 'l' }, tab.label),
+            props.loading === true
+              ? null
+              : React.createElement('span', {
+                  key: 'n', style: tabBadgeStyle, title: __('settings.tabCount', { n: tab.count }),
+                }, String(tab.count)),
+          ])
+        })),
+        React.createElement('button', {
+          key: 'config',
+          type: 'button',
+          style: ghostBtnStyle,
+          onClick: () => setConfigOpen(true),
+        }, __('settings.config')),
+      ])
+    }
+
+    /**
+     * The import policy, behind the strip's Configure button.
+     *
+     * Everything that is a *policy* lives here and nothing that is a *row* does.
+     * The ownership mode leads because it is the one that has to be read before
+     * importing rather than after: adopt moves the source file out of WorkBuddy,
+     * and that is not something to discover from a badge afterwards.
+     *
+     * It renders from the overlay slot, like the toast: the button that opens it
+     * sits inside the settings modal, so this is the one place guaranteed to
+     * paint above it.
+     */
+    function ConfigDialog(props) {
+      const __ = (props && props.t) || t
+      useLocaleRevision()
+      const [, forceRender] = useState(0)
+
+      // The dialog renders from its own overlay entry, so it has no props to
+      // follow: it watches the same cells every writer touches.
+      useEffect(() => configSubscribe(() => forceRender(n => n + 1)), [])
+
+      if (!configState.open) return null
+
+      const mode = importOptions.mode
+      return React.createElement(Modal, {
+        open: true,
+        onClose: () => setConfigOpen(false),
+        title: __('settings.configTitle'),
+        closeLabel: __('settings.close'),
+        description: __('settings.configDesc'),
+        footer: [React.createElement('button', {
+          key: 'close', type: 'button', style: primaryBtnStyle, onClick: () => setConfigOpen(false),
+        }, __('settings.close'))],
+      }, [
+        React.createElement('div', {
+          key: 'mode-head', style: { ...settingLabelStyle, fontWeight: 600, marginBottom: 2 },
+        }, __('settings.mode')),
+        React.createElement('select', {
+          key: 'mode-select',
+          value: mode,
+          style: selectStyle,
+          'aria-label': __('settings.mode'),
+          onChange: (event) => setOption('mode', event.target.value),
+        }, [
+          React.createElement('option', { key: 'copy', value: 'copy' }, __('settings.mode.copy')),
+          React.createElement('option', { key: 'adopt', value: 'adopt' }, __('settings.mode.adopt')),
+          React.createElement('option', { key: 'sync', value: 'sync' }, __('settings.mode.sync')),
+        ]),
+        // 选中项的解释紧跟其后：三种模式的代价都不是一句话能说清的，而
+        // 「接管会搬走原文件」这种事必须在按按钮之前就看见。
+        React.createElement('div', { key: 'mode-hint', style: { ...metaStyle, marginTop: 6 } },
+          __(`settings.mode.${mode}Hint`)),
+
+        React.createElement('div', { key: 'sep', style: separatorStyle }),
+        React.createElement(OptionRow, {
+          key: 'opt-notools',
+          label: __('settings.noTools'),
+          hint: __('settings.noToolsHint'),
+          checked: importOptions.noTools,
+          onChange: (value) => setOption('noTools', value),
+        }),
+        React.createElement(OptionRow, {
+          key: 'opt-asttext',
+          label: __('settings.toolsAsText'),
+          hint: __('settings.toolsAsTextHint'),
+          checked: importOptions.toolsAsText,
+          onChange: (value) => setOption('toolsAsText', value),
+        }),
+
+        // 读的是哪儿，属于「你在改什么」的一部分：源目录写错时，模式选得再对
+        // 也没用。它随每次读取更新，在配置里报一次就够。
+        sourceInfo.root.length === 0
+          ? null
+          : React.createElement('div', {
+              key: 'root',
+              style: { ...metaStyle, marginTop: 10, marginBottom: 0, wordBreak: 'break-all' },
+            }, __('settings.root', { root: sourceInfo.root })),
+      ])
+    }
+
+    /**
      * The import page, registered into `settings.section` so it appears with
      * the harness's own settings pages.
      *
-     * Selection state is a Set of candidate ids; already-imported rows are
-     * shown for completeness but cannot be picked (the host would skip them
-     * anyway — this keeps the count honest instead of lying about the work).
+     * One list in two tabs rather than one long page: the candidates split into
+     * what still has to come across and what already has, because the verb
+     * differs (import vs sync back / put back) and a toolbar with all three in
+     * it makes "which button is mine" a question the user has to answer first.
+     *
+     * The page is a list and nothing else. The import policy used to sit under
+     * the list, which meant every visit ended in a form rather than at the rows;
+     * it lives behind the strip's Configure button now (`ConfigDialog`), and the
+     * one line that quotes it keeps the current choice visible while importing.
+     *
+     * Selection is a Set of candidate ids, shared across the tabs: a tick is a
+     * statement about a row, not about the tab it was made in, and the action
+     * buttons already sort the ticks by what the row *is* — import only takes
+     * rows that are not in DSH yet, sync only takes rows that can be written
+     * back, put-back only takes rows this plugin adopted.
      */
     function ImportPanel() {
       const __ = t
       useLocaleRevision()
       const [sessions, setSessions] = useState([])
-      const [root, setRoot] = useState('')
       const [picked, setPicked] = useState(() => new Set())
       const [filter, setFilter] = useState('')
       const [loading, setLoading] = useState(true)
       const [importing, setImporting] = useState(false)
       const [error, setError] = useState(null)
       const [note, setNote] = useState(null)
-      const [noTools, setNoTools] = useState(false)
-      const [toolsAsText, setToolsAsText] = useState(false)
-      // 归属模式。默认 copy：与这个插件一直以来的行为一致，且完全不碰源文件。
-      const [mode, setMode] = useState('copy')
       const [syncing, setSyncing] = useState(false)
       const [restoring, setRestoring] = useState(false)
+      // Paging. `page` is zero-based and the slice is derived (`paginate`), so a
+      // filter or an import that shortens the list can never strand the page on
+      // a slice it has no way back from.
+      const [tab, setTab] = useState(TAB_PENDING)
+      const [page, setPage] = useState(0)
+      const [pageSize, setPageSize] = useState(() => readPageSize())
+      const [, forceRender] = useState(0)
 
       // Import / sync / restore are mutually exclusive and all three mutate
       // something, so one flag gates every control rather than three.
@@ -452,7 +912,7 @@ window.__ModuleLoader__.load({
         try {
           const payload = await fetchSessions()
           setSessions(payload.sessions ?? [])
-          setRoot(payload.workbuddyRoot ?? '')
+          sourceInfo.root = payload.workbuddyRoot ?? ''
           // A row that just got imported must lose its checkbox immediately.
           setPicked((prev) => {
             const done = new Set((payload.sessions ?? []).filter(s => s.alreadyImported).map(s => s.id))
@@ -469,23 +929,31 @@ window.__ModuleLoader__.load({
 
       useEffect(() => { refresh() }, [refresh])
 
+      // The plan line quotes the dialog's policy, so the page has to re-render
+      // when the dialog changes it.
+      useEffect(() => configSubscribe(() => forceRender(n => n + 1)), [])
+
       const pending = sessions.filter(s => !s.alreadyImported)
+      const imported = sessions.filter(s => s.alreadyImported)
       const byId = new Map(sessions.map(s => [s.id, s]))
+      const inTab = tab === TAB_PENDING ? pending : imported
+
       const needle = filter.trim().toLowerCase()
       const visible = needle.length === 0
-        ? sessions
-        : sessions.filter(s => (
+        ? inTab
+        : inTab.filter(s => (
           String(s.title || '').toLowerCase().includes(needle)
           || String(s.cwd || '').toLowerCase().includes(needle)
           || String(s.projectDir || '').toLowerCase().includes(needle)
           || String(s.id || '').toLowerCase().includes(needle)
         ))
-      const visiblePending = visible.filter(s => !s.alreadyImported)
       // 「全选」跳过 WorkBuddy 侧已删除的：那是用户主动删过的，默认勾上等于复活。
-      const autoPickable = visiblePending.filter(s => !s.deletedInWorkBuddy)
-      const pickedVisible = visiblePending.filter(s => picked.has(s.id)).length
-      const allVisiblePicked = autoPickable.length > 0 && autoPickable.every(s => picked.has(s.id))
-      const anyDeleted = sessions.some(s => s.deletedInWorkBuddy)
+      // 已导入那栏没有这回事，整页都可选。
+      const selectable = tab === TAB_PENDING
+        ? visible.filter(s => !s.deletedInWorkBuddy)
+        : visible
+      const allVisiblePicked = selectable.length > 0 && selectable.every(s => picked.has(s.id))
+      const anyDeleted = pending.some(s => s.deletedInWorkBuddy)
 
       // One tick set, three targets. Which rows a button acts on depends on
       // what the row *is*, so a single list serves import, sync and restore
@@ -493,6 +961,21 @@ window.__ModuleLoader__.load({
       const importIds = [...picked].filter(id => byId.get(id) !== undefined && !byId.get(id).alreadyImported)
       const syncIds = [...picked].filter(id => byId.get(id)?.alreadyImported === true && byId.get(id).canSyncBack !== false)
       const restoreIds = [...picked].filter(id => byId.get(id)?.adopted === true)
+
+      // Select acts on the page, not on the tab behind it: with 400 candidates
+      // behind a filter, "select all" that reached off-screen would hand the
+      // import button ids the user never saw.
+      const toggleAllVisible = useCallback(() => {
+        setPicked((prev) => {
+          const next = new Set(prev)
+          if (selectable.every(s => next.has(s.id))) {
+            for (const row of selectable) next.delete(row.id)
+          } else {
+            for (const row of selectable) next.add(row.id)
+          }
+          return next
+        })
+      }, [selectable])
 
       const togglePick = useCallback((id) => {
         setPicked((prev) => {
@@ -503,11 +986,17 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
-      const toggleAllVisible = useCallback(() => {
-        setPicked((prev) => (allVisiblePicked
-          ? new Set()
-          : new Set(autoPickable.map(s => s.id))))
-      }, [allVisiblePicked, autoPickable])
+      const onTab = useCallback((id) => {
+        setTab(id)
+        // Row 51 of the other list is not row 51 of this one.
+        setPage(0)
+      }, [])
+
+      const onPageSize = useCallback((size) => {
+        setPageSize(size)
+        writePageSize(size)
+        setPage(0)
+      }, [])
 
       const onImport = useCallback(async () => {
         const ids = importIds
@@ -516,7 +1005,7 @@ window.__ModuleLoader__.load({
         setError(null)
         setNote(null)
         try {
-          const result = await postImport(ids, { noTools, toolsAsText, mode })
+          const result = await postImport(ids, { ...importOptions })
           // Pull the sidebar in parallel with the panel re-read: the rows the
           // user is about to look for live in the sidebar, not here.
           const listed = resyncSessionList(result.imported.map(entry => entry.id))
@@ -549,7 +1038,7 @@ window.__ModuleLoader__.load({
           setError(reason?.message ?? String(reason))
         }
         setImporting(false)
-      }, [importIds, noTools, toolsAsText, mode, refresh, __])
+      }, [importIds, refresh, __])
 
       /**
        * Sync mode's second half.
@@ -608,99 +1097,118 @@ window.__ModuleLoader__.load({
         setRestoring(false)
       }, [restoreIds, refresh, __])
 
-      const headingStyle = { fontSize: 13, fontWeight: 600, margin: '14px 0 2px' }
+      const { rows: pageRows, page: safePage, pageCount } = paginate(visible, page, pageSize)
+      const modeHint = __(`settings.mode.${importOptions.mode}`)
+      const toolsHint = importOptions.noTools
+        ? __('settings.planTools.drop')
+        : (importOptions.toolsAsText ? __('settings.planTools.text') : __('settings.planTools.keep'))
+
+      const actions = tab === TAB_PENDING
+        ? [
+            React.createElement('button', {
+              key: 'import',
+              type: 'button',
+              style: importIds.length === 0 || busy ? disabledBtnStyle : primaryBtnStyle,
+              disabled: importIds.length === 0 || busy,
+              onClick: onImport,
+            }, importing ? __('settings.importing') : __('settings.import', { n: importIds.length })),
+          ]
+        // 回写与还原只在有对应目标时出现：按钮常驻会让「现在该按哪个」变成
+        // 一个要用户先想清楚的问题，而多数时候答案只有一个。
+        : [
+            syncIds.length > 0 || syncing
+              ? React.createElement('button', {
+                  key: 'sync',
+                  type: 'button',
+                  style: syncIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
+                  disabled: syncIds.length === 0 || busy,
+                  onClick: onSync,
+                }, syncing ? __('settings.syncing') : __('settings.syncButton', { n: syncIds.length }))
+              : null,
+            restoreIds.length > 0 || restoring
+              ? React.createElement('button', {
+                  key: 'restore',
+                  type: 'button',
+                  style: restoreIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
+                  disabled: restoreIds.length === 0 || busy,
+                  onClick: onRestore,
+                }, restoring ? __('settings.restoring') : __('settings.restoreButton'))
+              : null,
+          ]
 
       return React.createElement('div', { style: { padding: '4px 0 8px' } }, [
+        React.createElement(ImportTabs, {
+          key: 'tabs',
+          tab,
+          pending: pending.length,
+          imported: imported.length,
+          loading,
+          onTab,
+          __,
+        }),
+
+        // Hint for the open tab. It is the first thing under the strip because
+        // it answers "which of the two am I looking at" before the rows do.
         React.createElement('div', {
-          key: 'desc', style: { ...metaStyle, margin: '0 0 8px' },
-        }, __('settings.desc')),
-        root.length > 0
-          ? React.createElement('div', { key: 'root', style: { ...metaStyle, marginBottom: 8 } },
-              __('settings.root', { root }))
+          key: 'hint', style: { ...metaStyle, margin: '8px 0 0' },
+        }, tab === TAB_PENDING ? __('settings.desc') : __('settings.importedHint')),
+
+        // The policy is behind a button, so the one line that quotes it stays
+        // on the page: without it the mode is invisible exactly while it is
+        // being applied.
+        tab === TAB_PENDING
+          ? React.createElement('div', { key: 'plan', style: { ...metaStyle, margin: '4px 0 0' } },
+              __('settings.plan', { mode: modeHint, tools: toolsHint }))
           : null,
 
-        // Toolbar: filter, select helpers, refresh, and the import action.
-        React.createElement('div', {
-          key: 'bar',
-          style: {
-            display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
-            padding: '6px 0 8px',
-            borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
-          },
-        }, [
+        tab === TAB_PENDING && anyDeleted
+          ? React.createElement('div', { key: 'deleted-hint', style: { ...metaStyle, margin: '4px 0 0' } },
+              __('settings.deletedHint'))
+          : null,
+
+        // Toolbar: filter, select helpers, refresh, the selection count, and the
+        // verbs that fit this tab.
+        React.createElement('div', { key: 'bar', style: toolbarStyle }, [
           React.createElement('input', {
             key: 'filter',
             type: 'text',
             value: filter,
             placeholder: __('settings.filter'),
-            onChange: (event) => setFilter(event.target.value),
-            style: {
-              flex: '1 1 180px', minWidth: 140, padding: '5px 10px',
-              fontSize: 12, borderRadius: 8,
-              border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4))',
-              background: 'transparent', color: 'var(--dsw-alias-label-primary, inherit)',
-            },
+            // A filter is a new list: page 1 is where the user expects to be.
+            onChange: (event) => { setFilter(event.target.value); setPage(0) },
+            style: filterInputStyle,
+            'aria-label': __('settings.filter'),
           }),
           React.createElement('button', {
             key: 'all',
             type: 'button',
-            style: ghostBtnStyle,
-            disabled: autoPickable.length === 0 || busy,
+            style: selectable.length === 0 || busy ? ghostBtnOffStyle : ghostBtnStyle,
+            disabled: selectable.length === 0 || busy,
             onClick: toggleAllVisible,
-          }, allVisiblePicked ? __('settings.selectNone') : __('settings.selectAll')),
+          }, allVisiblePicked ? __('settings.selectNone') : __('settings.selectPage')),
           React.createElement('button', {
             key: 'refresh',
             type: 'button',
-            style: ghostBtnStyle,
+            style: loading || busy ? ghostBtnOffStyle : ghostBtnStyle,
             disabled: loading || busy,
             onClick: () => refresh(),
           }, __('settings.refresh')),
-          React.createElement('button', {
-            key: 'import',
-            type: 'button',
-            style: importIds.length === 0 || busy ? disabledBtnStyle : primaryBtnStyle,
-            disabled: importIds.length === 0 || busy,
-            onClick: onImport,
-          }, importing ? __('settings.importing') : __('settings.import', { n: importIds.length })),
-          // 回写与还原只在有对应目标时出现：三个按钮常驻会让「现在该按哪个」
-          // 变成一个要用户先想清楚的问题，而多数时候答案只有一个。
-          syncIds.length > 0 || syncing
-            ? React.createElement('button', {
-                key: 'sync',
-                type: 'button',
-                style: syncIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
-                disabled: syncIds.length === 0 || busy,
-                onClick: onSync,
-              }, syncing ? __('settings.syncing') : __('settings.syncButton', { n: syncIds.length }))
-            : null,
-          restoreIds.length > 0 || restoring
-            ? React.createElement('button', {
-                key: 'restore',
-                type: 'button',
-                style: restoreIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
-                disabled: restoreIds.length === 0 || busy,
-                onClick: onRestore,
-              }, restoring ? __('settings.restoring') : __('settings.restoreButton'))
-            : null,
+          React.createElement('span', {
+            key: 'picked', style: { ...metaStyle, margin: 0 },
+          }, __('batch.selected', { n: picked.size })),
+          ...actions,
         ]),
-
-        React.createElement('div', { key: 'count', style: { ...metaStyle, margin: '2px 0 0' } },
-          __('settings.candidates', { n: sessions.length, done: sessions.length - pending.length })),
-
-        anyDeleted
-          ? React.createElement('div', {
-              key: 'deleted-hint', style: { ...metaStyle, marginTop: 4 },
-            }, __('settings.deletedHint'))
-          : null,
 
         loading
           ? React.createElement('div', { key: 'loading', style: { ...metaStyle, marginTop: 10 } },
               __('settings.loading'))
           : visible.length === 0
             ? React.createElement('div', { key: 'none', style: { ...metaStyle, marginTop: 10 } },
-                sessions.length === 0 ? __('settings.empty') : __('settings.filter'))
+                inTab.length === 0
+                  ? (tab === TAB_PENDING ? __('settings.empty') : __('settings.emptyImported'))
+                  : __('settings.filterEmpty'))
             : React.createElement('div', { key: 'list', style: listBoxStyle },
-                visible.map((session, index) => {
+                pageRows.map((session, index) => {
                   const badges = []
                   if (session.alreadyImported) {
                     badges.push(React.createElement('span', { key: 'done', style: badgeStyle }, __('settings.badgeDone')))
@@ -751,42 +1259,20 @@ window.__ModuleLoader__.load({
                   ])
                 })),
 
-        // 归属方式。放在选项之前：它决定「导入」这个动作到底意味着什么，
-        // 比「要不要保留工具卡片」高一个层级。
-        React.createElement('div', { key: 'mode-head', style: headingStyle }, __('settings.mode')),
-        React.createElement('select', {
-          key: 'mode-select',
-          value: mode,
-          disabled: busy,
-          onChange: (event) => setMode(event.target.value),
-          style: selectStyle,
-        }, [
-          React.createElement('option', { key: 'copy', value: 'copy' }, __('settings.mode.copy')),
-          React.createElement('option', { key: 'adopt', value: 'adopt' }, __('settings.mode.adopt')),
-          React.createElement('option', { key: 'sync', value: 'sync' }, __('settings.mode.sync')),
-        ]),
-        // 选中项的解释紧跟其后：三种模式的代价都不是一句话能说清的，而
-        // 「接管会搬走原文件」这种事必须在按按钮之前就看见。
-        React.createElement('div', { key: 'mode-hint', style: { ...metaStyle, marginTop: 6 } },
-          __(`settings.mode.${mode}Hint`)),
-
-        React.createElement('div', { key: 'opts-head', style: headingStyle }, __('settings.options')),
-        React.createElement(OptionRow, {
-          key: 'opt-notools',
-          label: __('settings.noTools'),
-          hint: __('settings.noToolsHint'),
-          checked: noTools,
-          disabled: busy,
-          onChange: setNoTools,
-        }),
-        React.createElement(OptionRow, {
-          key: 'opt-asttext',
-          label: __('settings.toolsAsText'),
-          hint: __('settings.toolsAsTextHint'),
-          checked: toolsAsText,
-          disabled: busy,
-          onChange: setToolsAsText,
-        }),
+        // Not rendered while empty: a footer under "nothing to import" is one
+        // more line of furniture.
+        loading || visible.length === 0
+          ? null
+          : React.createElement(Pager, {
+              key: 'pager',
+              page: safePage,
+              pageCount,
+              total: visible.length,
+              pageSize,
+              onPage: setPage,
+              onPageSize,
+              __,
+            }),
 
         error !== null
           ? React.createElement('div', { key: 'err', style: errStyle }, [
@@ -838,6 +1324,15 @@ window.__ModuleLoader__.load({
         order: 130,
         ...(localeSvc ? { locale: NS } : {}),
       }, ToastHost))
+
+      // The policy dialog, from the same overlay. It sits after the toast so a
+      // banner raised while it is open still lands on top of it.
+      ctx.slots.inject(OVERLAY_SLOT, () => ctx.slots.register({
+        name: OVERLAY_SLOT,
+        id: CONFIG_ID,
+        order: 140,
+        ...(localeSvc ? { locale: NS } : {}),
+      }, ConfigDialog))
     }
 
     return { apply, inject: ['slots'] }
