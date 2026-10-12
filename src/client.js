@@ -60,6 +60,9 @@ window.__ModuleLoader__.load({
       'settings.configAbout': '这里的改动立即生效，关掉即生效完毕。',
       'settings.close': '关闭',
       'settings.tip': '说明',
+      // 正文区那个小标题。叫「帮助」不叫「说明」：它管的是「这一栏是干什么的」，
+      // 和设置行里「这一项开关是什么意思」不是一个问题。
+      'settings.help': '帮助',
       // One explanation per tab, behind that tab's own "?" — the sentence used to
       // be a paragraph under the strip, where it answered "which of the three am
       // I looking at" only after you had already crossed over.
@@ -172,6 +175,7 @@ window.__ModuleLoader__.load({
       'settings.configAbout': 'Every change here applies immediately — just close this when you are done.',
       'settings.close': 'Close',
       'settings.tip': 'Explanation',
+      'settings.help': 'Help',
       'settings.pendingTip1': 'Import local WorkBuddy (Tencent CodeBuddy) conversations into DSH as native, resumable sessions.',
       'settings.pendingTip2': 'Tick what you want; re-importing skips automatically.',
       'settings.pendingTip3': 'The time column is the last activity (last message); newest first, sessions from the same project folder kept together.',
@@ -656,22 +660,13 @@ window.__ModuleLoader__.load({
     }
     const tabBaseStyle = {
       display: 'inline-flex', alignItems: 'center', gap: 6,
-      padding: '6px 10px', borderRadius: '6px 6px 0 0',
+      // The tab's underline has to sit 1px into the strip's own border, so the
+      // tab is pulled down by that much rather than the strip being pushed up.
+      padding: '6px 10px', marginBottom: -1, borderRadius: '6px 6px 0 0',
       border: 'none', borderBottom: '2px solid transparent',
       background: 'transparent', cursor: 'pointer',
       fontSize: 13, lineHeight: '20px',
       color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
-    }
-    // A tab and its "?" on one line. The negative bottom margin moved here from
-    // the tab itself: the tab's underline has to sit 1px into the strip's own
-    // border, and the wrapper is now what the flex line measures.
-    // `position: relative` is what the tab's "?" hangs its bubble off. Without
-    // it the bubble is placed against the nearest positioned ancestor further
-    // up — measured in the real layout, that put it 116px below the viewport
-    // rather than under the tab it describes.
-    const tabItemStyle = {
-      position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 4,
-      marginBottom: -1,
     }
     /** The open tab: same shape as the idle one, marked rather than disabled. */
     const tabOnStyle = {
@@ -757,7 +752,7 @@ window.__ModuleLoader__.load({
     const tipItemStyle = { margin: '2px 0' }
     // The settings dialog's own explanation: a caption-shaped line holding only
     // a "?" — the sentence that used to be the description paragraph sits in it.
-    const aboutRowStyle = {
+    const tipRowStyle = {
       position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 6,
       fontSize: 12, lineHeight: '18px',
       color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
@@ -1175,29 +1170,14 @@ window.__ModuleLoader__.load({
      */
     function ImportTabs(props) {
       const __ = props.__ || t
+      // No "?" on the tab itself. Each pane explains itself under a 「帮助 ?」
+      // heading in the body, where the answer is also *scoped*: the strip always
+      // shows every tab, so a bubble hung on one would be explaining a pane the
+      // reader has not opened.
       const tabs = [
-        {
-          id: TAB_PENDING,
-          label: __('settings.tabPending'),
-          count: props.pending,
-          tip: [
-            __('settings.pendingTip1'),
-            __('settings.pendingTip2'),
-            __('settings.pendingTip3'),
-          ],
-        },
-        {
-          id: TAB_IMPORTED,
-          label: __('settings.tabImported'),
-          count: props.imported,
-          tip: [__('settings.importedTip1'), __('settings.importedTip2')],
-        },
-        {
-          id: TAB_RECYCLE,
-          label: __('settings.tabRecycle'),
-          count: props.recycled,
-          tip: [__('settings.recycleTip1'), __('settings.recycleTip2')],
-        },
+        { id: TAB_PENDING, label: __('settings.tabPending'), count: props.pending },
+        { id: TAB_IMPORTED, label: __('settings.tabImported'), count: props.imported },
+        { id: TAB_RECYCLE, label: __('settings.tabRecycle'), count: props.recycled },
       ]
       return React.createElement('div', { style: tabStripStyle }, [
         React.createElement('div', {
@@ -1207,29 +1187,21 @@ window.__ModuleLoader__.load({
           style: tabListStyle,
         }, tabs.map(tab => {
           const on = props.tab === tab.id
-          // The "?" is a *sibling* of the tab button, not a child: a button may
-          // not contain another button, and as a sibling a click on it cannot be
-          // mistaken for a request to switch tabs.
-          return React.createElement('span', { key: tab.id, style: tabItemStyle }, [
-            React.createElement('button', {
-              key: 'tab',
-              type: 'button',
-              role: 'tab',
-              'data-tab': tab.id,
-              'aria-selected': on,
-              style: on ? tabOnStyle : tabBaseStyle,
-              onClick: () => props.onTab?.(tab.id),
-            }, [
-              React.createElement('span', { key: 'l' }, tab.label),
-              props.loading === true
-                ? null
-                : React.createElement('span', {
-                    key: 'n', style: tabBadgeStyle, title: __('settings.tabCount', { n: tab.count }),
-                  }, String(tab.count)),
-            ]),
-            React.createElement(InfoTip, {
-              key: 'tip', t: __, placement: 'down', label: tab.label, items: tab.tip,
-            }),
+          return React.createElement('button', {
+            key: tab.id,
+            type: 'button',
+            role: 'tab',
+            'data-tab': tab.id,
+            'aria-selected': on,
+            style: on ? tabOnStyle : tabBaseStyle,
+            onClick: () => props.onTab?.(tab.id),
+          }, [
+            React.createElement('span', { key: 'l' }, tab.label),
+            props.loading === true
+              ? null
+              : React.createElement('span', {
+                  key: 'n', style: tabBadgeStyle, title: __('settings.tabCount', { n: tab.count }),
+                }, String(tab.count)),
           ])
         })),
         React.createElement('button', {
@@ -1273,7 +1245,7 @@ window.__ModuleLoader__.load({
       // It is not hung off the title itself: `Modal` copies `title` into the
       // dialog's `aria-label`, so a node there would announce the dialog as
       // "[object Object]" to a screen reader.
-      const about = React.createElement('span', { key: 'about', style: aboutRowStyle }, [
+      const about = React.createElement('span', { key: 'about', style: tipRowStyle }, [
         React.createElement('span', { key: 'l' }, __('settings.tip')),
         React.createElement(InfoTip, {
           key: 'tip', t: __, placement: 'down', items: [__('settings.configAbout')],
@@ -1799,10 +1771,28 @@ window.__ModuleLoader__.load({
           __,
         }),
 
-        // No hint paragraph under the strip: each tab now carries its own "?" on
-        // the label, so the answer to "which of the three am I looking at" is
-        // available on the tabs themselves — and the strip gets its line back.
-        //
+        // 「帮助 ?」: what this pane is for. Under a heading in the body rather
+        // than on the tab, so the question is discoverable without hovering the
+        // strip — and so the answer belongs to the pane that is actually open.
+        React.createElement('span', { key: 'help', style: tipRowStyle }, [
+          React.createElement('span', { key: 'l' }, __('settings.help')),
+          React.createElement(InfoTip, {
+            // Named, so this chip does not announce itself as plain 「说明」 like
+            // the dialog's own one — a screen reader hearing two identical
+            // labels cannot tell the page's help from the settings' explanation.
+            key: 'tip', t: __, placement: 'down', label: __('settings.help'),
+            items: tab === TAB_PENDING
+              ? [
+                __('settings.pendingTip1'),
+                __('settings.pendingTip2'),
+                __('settings.pendingTip3'),
+              ]
+              : tab === TAB_IMPORTED
+                ? [__('settings.importedTip1'), __('settings.importedTip2')]
+                : [__('settings.recycleTip1'), __('settings.recycleTip2')],
+          }),
+        ]),
+
         // The policy is behind a button, so the one line that quotes it stays
         // on the page: without it the mode is invisible exactly while it is
         // being applied.

@@ -913,7 +913,7 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('三个页签各带一个问号，说明不再占版面', async () => {
+  await checkAsync('页签不带问号；正文区「帮助 ?」承载这一栏的说明，内容随栏切换', async () => {
     globalThis.fetch = fakeFetch().impl
     try {
       const { view } = mountPage(loadBundle())
@@ -921,31 +921,37 @@ export async function run() {
 
       const page = text(view.tree())
       for (const said of ['把本机 WorkBuddy', '已经在 DSH 里的会话', '从待导入里划掉的会话']) {
-        if (page.includes(said)) throw new Error(`页签说明不该常驻版面: ${said}`)
+        if (page.includes(said)) throw new Error(`栏说明不该常驻版面: ${said}`)
       }
 
-      const cases = [['待导入', '把本机 WorkBuddy'], ['已导入', '已经在 DSH 里的会话'], ['回收站', '从待导入里划掉的会话']]
+      // 页签条上没有问号：三个页签始终都在条上，挂在某个页签上的气泡会去
+      // 解释一个用户还没打开的栏。
+      const strip = collect(view.tree()).find(n => n.kind === 'host' && n.props?.role === 'tablist')
+      if (strip === undefined) throw new Error('应有页签条')
+      if (collect(strip).some(n => n.kind === 'host' && n.props?.role === 'button')) {
+        throw new Error('页签条上不该挂问号')
+      }
+
+      const cases = [
+        ['pending', '把本机 WorkBuddy'],
+        ['imported', '已经在 DSH 里的会话'],
+        ['recycle', '从待导入里划掉的会话'],
+      ]
       for (const [name, said] of cases) {
-        const chip = tipChip(view.tree(), name)
-        if (chip === undefined) throw new Error(`「${name}」页签右侧缺少问号`)
+        await click(view, tabButton(view, name))
+        const chip = tipChip(view.tree(), '帮助')
+        if (chip === undefined) throw new Error(`正文区缺少「帮助 ?」: ${text(view.tree()).slice(0, 300)}`)
         // 没有定位上下文，气泡会挂到更上层的祖先上 —— 实测会落到视口外面。
         if (tipLine(view.tree(), chip).props.style.position !== 'relative') {
-          throw new Error(`「${name}」的问号要有自己的定位上下文`)
+          throw new Error('「帮助 ?」要有自己的定位上下文')
         }
-        const tip = await hoverTip(view, view.tree(), name)
+        const tip = await hoverTip(view, view.tree(), '帮助')
         if (!tip || !text(tip).includes(said)) {
-          throw new Error(`「${name}」的问号应说出自己的说明: ${tip && text(tip)}`)
+          throw new Error(`「${name}」栏的帮助应说出这一栏的事: ${tip && text(tip)}`)
         }
-        // 页签在最上面，向上开没有空间。
+        // 正文区第一行，上方只有页签条，向上开没有空间。
         if (tip.props.style.top !== '100%') throw new Error(`「${name}」的气泡要向下展开`)
         if (tip.props.style.bottom !== 'auto') throw new Error('向下展开时不该再压着 bottom')
-      }
-
-      // 问号是页签的兄弟节点，不是它的子节点：按钮里不能再套按钮，
-      // 而且点问号不该被当成「切换页签」。
-      const tab = tabButton(view, 'pending')
-      if (collect(tab).some(n => n.kind === 'host' && n.props?.role === 'tooltip')) {
-        throw new Error('气泡不该挂在页签按钮里面')
       }
     } finally { globalThis.fetch = realFetch }
   })
