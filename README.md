@@ -44,7 +44,8 @@ DSH ($DSH_HOME/sessions)  →  重启后出现在会话列表
 ```text
 请帮我在 DeepSeek Harness (DSH) 里安装插件 dsh-import-workbuddy。
 目标是【DSH 设置里多出一页可视化导入面板】，不是用命令行导会话。
-按下面做，每步做完报告结果，任何一步失败就停下来问我。
+按下面做。除了「装到哪个 profile」需要我回答，其余一律自己判断执行，
+不要停下来等回复；每步走了哪个分支、命令输出是什么，写进最后的报告。
 
 0. 前置检查
    - node --version 需要 >= 22.19（DSH 需要 node:sqlite 与 zstd）
@@ -57,12 +58,24 @@ DSH ($DSH_HOME/sessions)  →  重启后出现在会话列表
      ~/.dsh/profiles/ 下的内容列给我看，不要猜。
    - 告诉我你找到的实际路径，以及 DSH 是桌面端还是 dsh web。
 
-1. 取源码放进 vendor（vendor 里的副本不会被市场更新覆盖掉）
-   cd <profile 目录>/vendor
-   git clone https://github.com/yuchuan000/dsh-import-workbuddy.git
-   # 已存在就 git pull
+1. 取源码放进 vendor（vendor 里的副本不会被市场更新覆盖掉）。
+   按 <profile>/vendor/dsh-import-workbuddy 的实际情况走，不要问我：
+   a) 不存在 → cd <profile 目录>/vendor && git clone https://github.com/yuchuan000/dsh-import-workbuddy.git
+   b) 存在且有 .git → git pull --ff-only
+      （拉不动就 git fetch --depth 1 origin main && git reset --hard origin/main）
+   c) 存在但**没有 .git**（zip 解压 / 别的机器同步过来 / 卸载后残留，都很常见）
+      → 就地接管，不要删目录、也不要 clone 到非空目录
+      （那会报 destination path already exists）：
+        cd <profile 目录>/vendor/dsh-import-workbuddy
+        git init -q
+        git remote add origin https://github.com/yuchuan000/dsh-import-workbuddy.git
+        git fetch --depth 1 origin main
+        git checkout -f -B main FETCH_HEAD
+   d) 版本校验：git log -1 --format='%h %s' 的前 7 位必须等于
+      git ls-remote https://github.com/yuchuan000/dsh-import-workbuddy.git HEAD 的前 7 位；
+      不等就回本步重做，最多两次。
    确认 vendor/dsh-import-workbuddy/ 下有：package.json、src/index.js、
-   src/client.js、lib/*.mjs、cordis.patch.yml。缺文件就停下来报告。
+   src/client.js、lib/*.mjs、cordis.patch.yml。
 
 2. 在 profile 目录里注册依赖（注意是 profile 目录，不是 vendor 里）
    cd <profile 目录>
