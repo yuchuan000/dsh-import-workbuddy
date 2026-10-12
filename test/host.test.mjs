@@ -39,6 +39,9 @@ const IMPORT_PATH = '/__dsh-import-workbuddy/import'
 const SYNC_PATH = '/__dsh-import-workbuddy/sync'
 const RESTORE_PATH = '/__dsh-import-workbuddy/restore'
 const ADOPTED_PATH = '/__dsh-import-workbuddy/adopted'
+const HIDE_PATH = '/__dsh-import-workbuddy/hide'
+const UNHIDE_PATH = '/__dsh-import-workbuddy/unhide'
+const REGROUP_PATH = '/__dsh-import-workbuddy/regroup'
 
 const ZSTD_C_CHECKSUM = zlib.constants.ZSTD_c_checksumFlag
 const { zstdCompressSync } = zlib
@@ -89,10 +92,11 @@ function makeSandbox() {
   mkdirSync(sessionsRoot, { recursive: true })
   const prevDsh = process.env.DSH_HOME
   const prevWb = process.env.WORKBUDDY_HOME
-  process.env.DSH_HOME = join(root, 'dsh')
+  const dshHome = join(root, 'dsh')
+  process.env.DSH_HOME = dshHome
   process.env.WORKBUDDY_HOME = wbHome
   return {
-    root, wbRoot, sessionsRoot,
+    root, wbRoot, sessionsRoot, dshHome,
     seed(project, sessions) {
       const dir = join(wbRoot, project)
       mkdirSync(dir, { recursive: true })
@@ -108,7 +112,7 @@ function makeSandbox() {
 
 // --- fake cordis / web server --------------------------------------------------
 
-function makeHarness() {
+function makeHarness(services = {}) {
   const registrations = []
   const webServer = {
     register(entry) {
@@ -120,13 +124,61 @@ function makeHarness() {
     },
   }
   const ctx = {
-    get(name) { return name === 'webServer' ? webServer : undefined },
+    get(name) { return name === 'webServer' ? webServer : services[name] },
     inject() { /* webServer 已存在，走不到这里 */ },
     effect(fn) { const d = fn(); return typeof d === 'function' ? d : () => {} },
   }
   mod.apply(ctx)
   const route = (path) => registrations.find(r => r.path === path)
   return { registrations, route }
+}
+
+/**
+ * 假的 workspaceRegistry：只实现 host 真正用到的四个成员。
+ *
+ * 真注册表的 attachSession 会读会话 header 校验 cwd 必须 realpath 后等于工作区
+ * path——这里保留这个拒绝路径（`reject` 集合），因为「挂不上要如实报失败」正是
+ * 被测的行为之一。
+ */
+function makeRegistry({ existing = [], reject = new Set() } = {}) {
+  const created = []
+  /**
+   * 实体自己带 attachSession —— 真注册表的接口就是这样（实体是 Workspace），
+   * 而 host 调用的正是 `workspace.attachSession(id)`。
+   */
+  const makeWorkspace = (id, path, title, sessionIds = []) => ({
+    id,
+    path,
+    title,
+    sessionIds,
+    async attachSession(sessionId) {
+      if (reject.has(sessionId)) throw new Error(`cannot attach session '${sessionId}': its cwd resolves elsewhere`)
+      if (!sessionIds.includes(sessionId)) sessionIds.unshift(sessionId)
+    },
+  })
+  const workspaces = existing.map((entry, index) => makeWorkspace(
+    entry.id ?? `ws-${index + 1}`,
+    entry.path,
+    entry.title ?? (entry.path.split(/[\\/]/).filter(Boolean).pop() ?? ''),
+    entry.sessionIds ?? [],
+  ))
+  const registry = {
+    created,
+    list() { return workspaces },
+    async create(path) {
+      const found = workspaces.find(w => String(w.path).toLowerCase() === String(path).toLowerCase())
+      if (found !== undefined) return found
+      const workspace = makeWorkspace(
+        `ws-${workspaces.length + 1}`,
+        path,
+        path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+      )
+      workspaces.push(workspace)
+      created.push(path)
+      return workspace
+    },
+  }
+  return registry
 }
 
 function makeRequest(method, { headers = {}, body } = {}) {
@@ -504,6 +556,155 @@ export async function run() {
       const { status } = await call(route(ADOPTED_PATH), { headers: { host: 'evil.example.com' } })
       assert.equal(status, 403)
     })
+    sb.restore()
+  }
+
+  // 6. 导入即归组：写盘只是半个导入，另一半是挂进 DSH 的工作区分组
+  {
+    const sb = makeSandbox()
+    sb.seed('proj-a', [{ id: 'sess-1', cwd: 'd:/work/proj-a', userText: 'first', assistantText: 'r' }])
+    sb.seed('proj-b', [{ id: 'sess-2', cwd: 'd:/work/proj-b', userText: 'second', assistantText: 'r' }])
+    const registry = makeRegistry({ existing: [{ id: 'ws-b', path: 'd:/work/proj-b' }] })
+    const { route } = makeHarness({ workspaceRegistry: registry })
+
+    await checkAsync('导入后按 cwd 建分组并挂上会话', async () => {
+      const { status, payload } = await call(route(IMPORT_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-1', 'wb-sess-2'] },
+      })
+      assert.equal(status, 200)
+      assert.deepEqual(payload.grouped.map(g => g.id).sort(), ['wb-sess-1', 'wb-sess-2'])
+      // 已存在的分组复用，没有的不建；挂载要真的落到 sessionIds 上。
+      assert.deepEqual(registry.created, ['d:/work/proj-a'])
+      const a = registry.list().find(w => w.path === 'd:/work/proj-a')
+      const b = registry.list().find(w => w.path === 'd:/work/proj-b')
+      assert.deepEqual(a.sessionIds, ['wb-sess-1'])
+      assert.deepEqual(b.sessionIds, ['wb-sess-2'])
+      assert.equal(payload.grouped.find(g => g.id === 'wb-sess-2').workspaceTitle, 'proj-b')
+    })
+
+    await checkAsync('/sessions 标出哪些已经归组', async () => {
+      const { payload } = await call(route(SESSIONS_PATH))
+      const byId = new Map(payload.sessions.map(s => [s.id, s]))
+      assert.equal(byId.get('wb-sess-1').grouped, true)
+      assert.equal(byId.get('wb-sess-2').grouped, true)
+    })
+
+    await checkAsync('注册表拒绝挂载时如实报失败，会话仍在 imported 里', async () => {
+      const strict = makeRegistry({ reject: new Set(['wb-sess-3']) })
+      const harness = makeHarness({ workspaceRegistry: strict })
+      sb.seed('proj-c', [{ id: 'sess-3', cwd: 'd:/work/proj-c', userText: 'third', assistantText: 'r' }])
+      const { status, payload } = await call(harness.route(IMPORT_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-3'] },
+      })
+      assert.equal(status, 200)
+      assert.equal(payload.imported.length, 1, '导入本身应当成功')
+      assert.equal(payload.regroupFailed.length, 1)
+      assert.match(payload.regroupFailed[0].error, /cannot attach/)
+    })
+
+    await checkAsync('没有 workspaceRegistry 时导入照常成功', async () => {
+      const harness = makeHarness()
+      sb.seed('proj-d', [{ id: 'sess-4', cwd: 'd:/work/proj-d', userText: 'fourth', assistantText: 'r' }])
+      const { status, payload } = await call(harness.route(IMPORT_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-4'] },
+      })
+      assert.equal(status, 200)
+      assert.equal(payload.imported.length, 1)
+      assert.deepEqual(payload.grouped, [])
+      assert.deepEqual(payload.regroupFailed, [])
+    })
+
+    await checkAsync('POST /regroup 补挂已经导入过的会话', async () => {
+      const registry = makeRegistry()
+      const harness = makeHarness({ workspaceRegistry: registry })
+      const { status, payload } = await call(harness.route(REGROUP_PATH), {
+        method: 'POST', body: { ids: ['wb-sess-1', 'wb-sess-2'] },
+      })
+      assert.equal(status, 200)
+      assert.deepEqual(payload.grouped.map(g => g.id).sort(), ['wb-sess-1', 'wb-sess-2'])
+      const a = registry.list().find(w => w.path === 'd:/work/proj-a')
+      assert.deepEqual(a.sessionIds, ['wb-sess-1'])
+    })
+
+    await checkAsync('/regroup 缺少 ids 返回 400', async () => {
+      const harness = makeHarness()
+      const { status } = await call(harness.route(REGROUP_PATH), { method: 'POST', body: {} })
+      assert.equal(status, 400)
+    })
+
+    sb.restore()
+  }
+
+  // 7. 页面自己的回收站：软删除只动插件清单，不碰 WorkBuddy
+  {
+    const sb = makeSandbox()
+    sb.seed('proj-a', [
+      { id: 'sess-1', cwd: 'd:/work/proj-a', userText: 'first', assistantText: 'r' },
+      { id: 'sess-2', cwd: 'd:/work/proj-a', userText: 'second', assistantText: 'r' },
+    ])
+    const { route } = makeHarness()
+
+    await checkAsync('POST /hide 让行离开待导入、出现在 hidden 标记里', async () => {
+      const hidden = await call(route(HIDE_PATH), { method: 'POST', body: { ids: ['wb-sess-1'] } })
+      assert.equal(hidden.status, 200)
+      const { payload } = await call(route(SESSIONS_PATH))
+      const byId = new Map(payload.sessions.map(s => [s.id, s]))
+      assert.equal(byId.get('wb-sess-1').hidden, true)
+      assert.equal(byId.get('wb-sess-1').title.length > 0, true, '清单要记住标题')
+      assert.equal(byId.get('wb-sess-1').cwd, 'd:/work/proj-a')
+      assert.equal(byId.get('wb-sess-2').hidden, false)
+    })
+
+    await checkAsync('软删除不动 WorkBuddy 的轨迹文件', async () => {
+      const files = readdirSync(join(sb.wbRoot, 'proj-a'))
+      assert.deepEqual(files.filter(name => name.endsWith('.jsonl')).sort(), ['sess-1.jsonl', 'sess-2.jsonl'])
+    })
+
+    await checkAsync('清单落盘在 DSH_HOME 下', async () => {
+      const manifest = join(sb.dshHome, 'import-workbuddy-hidden.json')
+      assert.equal(existsSync(manifest), true)
+      const parsed = JSON.parse(readFileSync(manifest, 'utf8'))
+      assert.equal(parsed.entries.length, 1)
+      assert.equal(parsed.entries[0].id, 'wb-sess-1')
+    })
+
+    await checkAsync('POST /unhide 让它回到待导入', async () => {
+      const undone = await call(route(UNHIDE_PATH), { method: 'POST', body: { ids: ['wb-sess-1'] } })
+      assert.equal(undone.status, 200)
+      const { payload } = await call(route(SESSIONS_PATH))
+      const row = payload.sessions.find(s => s.id === 'wb-sess-1')
+      assert.equal(row.hidden, false)
+    })
+
+    await checkAsync('轨迹文件不见了，回收站里那一行仍能被描述出来', async () => {
+      await call(route(HIDE_PATH), { method: 'POST', body: { ids: ['wb-sess-2'] } })
+      rmSync(join(sb.wbRoot, 'proj-a', 'sess-2.jsonl'))
+      const { payload } = await call(route(SESSIONS_PATH))
+      const row = payload.sessions.find(s => s.id === 'wb-sess-2')
+      assert.ok(row, '清单兜底的那一行仍应出现在列表里')
+      assert.equal(row.hidden, true)
+      assert.equal(row.title, 'second', `应保留划掉时的标题：${row.title}`)
+      assert.equal(row.cwd, 'd:/work/proj-a')
+      assert.equal(row.projectDir, 'proj-a')
+    })
+
+    await checkAsync('/hide 缺少 ids 返回 400', async () => {
+      const { status } = await call(route(HIDE_PATH), { method: 'POST', body: {} })
+      assert.equal(status, 400)
+    })
+
+    await checkAsync('/hide 跨源返回 403', async () => {
+      const { status } = await call(route(HIDE_PATH), {
+        method: 'POST', headers: { 'sec-fetch-site': 'cross-site' }, body: { ids: ['wb-sess-1'] },
+      })
+      assert.equal(status, 403)
+    })
+
+    await checkAsync('/unhide 方法不符返回 405', async () => {
+      const { status } = await call(route(UNHIDE_PATH))
+      assert.equal(status, 405)
+    })
+
     sb.restore()
   }
 

@@ -184,6 +184,27 @@ function checkbox(view, rowText) {
   return collect(row).find(n => n.kind === 'host' && n.type === 'input')
 }
 
+/**
+ * 工具栏最左的全选框。
+ *
+ * 它的标签文字就是「全选」，所以能按整段文字精确定位——列表行里的 label
+ * 文字是标题，不会撞上。
+ */
+function selectAllBox(view) {
+  const label = hosts(view, n => n.type === 'label' && text(n).trim() === '全选')[0]
+  if (label === undefined) return undefined
+  return collect(label).find(n => n.kind === 'host' && n.type === 'input')
+}
+
+/** 列表里的分组小标题（它是唯一带 data-group 的宿主元素）。 */
+function groupHeadings(view) {
+  return hosts(view, n => n.props?.['data-group'] !== undefined).map(n => text(n))
+}
+/** 分组标题所属的分组键（完整目录），用来断言排序。 */
+function groupKeys(view) {
+  return hosts(view, n => n.props?.['data-group'] !== undefined).map(n => n.props['data-group'])
+}
+
 function textInput(view) { return hosts(view, n => n.type === 'input' && n.props.type === 'text')[0] }
 
 /** 标签按钮，按 data-tab 取。别按文案找：标签名和页内文案是同一批词。 */
@@ -316,42 +337,51 @@ function mountPage(bundle, services) {
 
 // --- fixtures ----------------------------------------------------------------
 
-// 字段与 host 的 /sessions 实际返回保持一致：三个状态标记互相独立。
+// 字段与 host 的 /sessions 实际返回保持一致：状态标记互相独立。
 const SESSION_A = {
   id: 'wb-aaa', title: '修一个导入 bug', cwd: 'D:\\proj\\a', projectDir: 'a',
   createdAt: 1_760_000_000_000, messageCount: 12, alreadyImported: false,
-  deletedInWorkBuddy: false, adopted: false, canSyncBack: true,
+  deletedInWorkBuddy: false, adopted: false, hidden: false, grouped: false, canSyncBack: true,
 }
 const SESSION_B = {
   id: 'wb-bbb', title: '写一个可视化页面', cwd: 'D:\\proj\\b', projectDir: 'b',
   createdAt: 1_760_000_600_000, messageCount: 30, alreadyImported: false,
-  deletedInWorkBuddy: false, adopted: false, canSyncBack: true,
+  deletedInWorkBuddy: false, adopted: false, hidden: false, grouped: false, canSyncBack: true,
 }
 const SESSION_DONE = {
   id: 'wb-ccc', title: '已经导过的会话', cwd: 'D:\\proj\\c', projectDir: 'c',
   createdAt: 1_759_999_000_000, messageCount: 4, alreadyImported: true,
-  deletedInWorkBuddy: false, adopted: false, canSyncBack: true,
+  deletedInWorkBuddy: false, adopted: false, hidden: false, grouped: true, canSyncBack: true,
 }
-/** WorkBuddy 侧已删除、轨迹文件还在的会话。 */
+/** WorkBuddy 侧已删除、轨迹文件还在的会话。它只是一个普通候选：标记已去掉。 */
 const SESSION_DELETED = {
   id: 'wb-ddd', title: '我早就删掉的会话', cwd: 'D:\\proj\\d', projectDir: 'd',
   createdAt: 1_759_998_000_000, messageCount: 7, alreadyImported: false,
-  deletedInWorkBuddy: true, adopted: false, canSyncBack: true,
+  deletedInWorkBuddy: true, adopted: false, hidden: false, grouped: false, canSyncBack: true,
 }
 /** 接管模式搬过来的：源文件已在 DSH 归档，不能再回写，但可以还原。 */
 const SESSION_ADOPTED = {
   id: 'wb-eee', title: '已搬到 DSH 的会话', cwd: 'D:\\proj\\e', projectDir: null,
   createdAt: 1_759_997_000_000, messageCount: 9, alreadyImported: true,
-  deletedInWorkBuddy: false, adopted: true, canSyncBack: false,
+  deletedInWorkBuddy: false, adopted: true, hidden: false, grouped: true, canSyncBack: false,
+}
+/** 导进来了、却因为当时代码没挂工作区而落在「未分组」的会话。 */
+const SESSION_UNGROUPED = {
+  id: 'wb-fff', title: '还没归组的会话', cwd: 'D:\\proj\\f', projectDir: 'f',
+  createdAt: 1_759_996_000_000, messageCount: 5, alreadyImported: true,
+  deletedInWorkBuddy: false, adopted: false, hidden: false, grouped: false, canSyncBack: true,
 }
 
 /**
- * 假 fetch：应答四条路由，并记录被问了什么。
+ * 假 fetch：应答全部路由，并记录被问了什么。
  *
  * 状态迁移要跟着真 host 走，否则测不到面板的刷新逻辑：
- *   /import   命中的条目变成 alreadyImported；adopt 模式再额外置 adopted 与
- *             canSyncBack:false（源文件被搬走了，自然不能再回写）。
- *   /restore  命中的条目退回 alreadyImported:false、adopted:false。
+ *   /import    命中的条目变成 alreadyImported；adopt 模式再额外置 adopted 与
+ *              canSyncBack:false（源文件被搬走了，自然不能再回写）。
+ *   /restore   命中的条目退回 alreadyImported:false、adopted:false。
+ *   /hide      命中的条目 hidden:true（待导入 -> 回收站）。
+ *   /unhide    命中的条目 hidden:false（回收站 -> 待导入）。
+ *   /regroup   命中的条目 grouped:true。
  */
 function fakeFetch({ sessions, importResult, syncResult, restoreResult } = {}) {
   const calls = []
@@ -376,6 +406,7 @@ function fakeFetch({ sessions, importResult, syncResult, restoreResult } = {}) {
         ? {
             ...s,
             alreadyImported: true,
+            grouped: true,
             ...(adopting ? { adopted: true, canSyncBack: false, projectDir: null } : {}),
           }
         : s))
@@ -384,6 +415,8 @@ function fakeFetch({ sessions, importResult, syncResult, restoreResult } = {}) {
         mode: body?.options?.mode ?? 'copy',
         imported: (body?.ids ?? []).map(id => ({ id, path: `C:\\x\\${id}`, events: 20 })),
         existing: [], empty: [], failed: [], adoptFailed: [],
+        grouped: (body?.ids ?? []).map(id => ({ id, workspaceTitle: 'proj' })),
+        regroupFailed: [],
       })
     }
     if (url.endsWith('/sync') && method === 'POST') {
@@ -401,6 +434,25 @@ function fakeFetch({ sessions, importResult, syncResult, restoreResult } = {}) {
       return respond(restoreResult ?? {
         ok: true,
         restored: (body?.ids ?? []).map(id => ({ id, restored: `C:\\wb\\${id}.jsonl` })),
+        failed: [],
+      })
+    }
+    if (url.endsWith('/hide') && method === 'POST') {
+      const ids = new Set(body?.ids ?? [])
+      current = current.map(s => (ids.has(s.id) ? { ...s, hidden: true } : s))
+      return respond({ ok: true, hidden: body?.ids ?? [] })
+    }
+    if (url.endsWith('/unhide') && method === 'POST') {
+      const ids = new Set(body?.ids ?? [])
+      current = current.map(s => (ids.has(s.id) ? { ...s, hidden: false } : s))
+      return respond({ ok: true, restored: body?.ids ?? [] })
+    }
+    if (url.endsWith('/regroup') && method === 'POST') {
+      const ids = new Set(body?.ids ?? [])
+      current = current.map(s => (ids.has(s.id) ? { ...s, grouped: true } : s))
+      return respond({
+        ok: true,
+        grouped: (body?.ids ?? []).map(id => ({ id, workspaceTitle: 'proj' })),
         failed: [],
       })
     }
@@ -466,15 +518,19 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('页面顶部是标签条：两栏各报条数 + 配置按钮', async () => {
+  await checkAsync('页面顶部是标签条：三栏各报条数 + 配置按钮', async () => {
     globalThis.fetch = fakeFetch().impl
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
       if (tabText(view, 'pending') !== '待导入2') throw new Error(`待导入栏应报 2：${tabText(view, 'pending')}`)
       if (tabText(view, 'imported') !== '已导入1') throw new Error(`已导入栏应报 1：${tabText(view, 'imported')}`)
+      if (tabText(view, 'recycle') !== '回收站0') throw new Error(`回收站栏应报 0：${tabText(view, 'recycle')}`)
       if (tabButton(view, 'pending').props['aria-selected'] !== true) throw new Error('默认停在待导入')
       if (button(view, '配置') === undefined) throw new Error('标签条右侧应有配置按钮')
+      // 回收站排在已导入右边，不是插在中间：它是收尾，不是流程的一步。
+      const order = hosts(view, n => n.props?.['data-tab'] !== undefined).map(n => n.props['data-tab'])
+      if (order.join(',') !== 'pending,imported,recycle') throw new Error(`标签顺序: ${order.join(',')}`)
     } finally { globalThis.fetch = realFetch }
   })
 
@@ -547,18 +603,72 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('全选本页 只选本页的待导入行', async () => {
+  // 筛选框自己一行，按钮在下一行，全选框在最左 —— 三件事一起断言，因为它们
+  // 是同一个布局决定的三面：筛选框不该和按钮抢同一行。
+  await checkAsync('筛选框独占一行，全选框在按钮行最左、且是全选整份筛选结果', async () => {
     globalThis.fetch = fakeFetch().impl
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      await click(view, button(view, '全选本页'))
+      const input = textInput(view)
+      if (input === undefined) throw new Error('应有筛选框')
+      if (input.props.style.width !== '100%') throw new Error('筛选框应占满一行')
+
+      const allBox = selectAllBox(view)
+      if (allBox === undefined) throw new Error('按钮行最左应有全选框')
+      const label = hosts(view, n => n.type === 'label' && text(n).trim() === '全选')[0]
+      if (text(label) !== '全选') throw new Error('全选框的标签应是「全选」')
+      // 全选框在 tree 里必须排在「刷新列表」之前：它是那一行的第一个控件。
+      const flattened = all(view)
+      if (flattened.indexOf(label) > flattened.indexOf(button(view, '刷新列表'))) {
+        throw new Error('全选框应在按钮行最左侧')
+      }
+
+      await change(view, allBox, { checked: true })
       if (button(view, '导入所选（2）') === undefined) {
-        throw new Error(`本页 2 个待导入，全选应得 2: ${text(view.tree()).slice(0, 300)}`)
+        throw new Error(`全选应勾上整份列表的 2 条：${text(view.tree()).slice(0, 300)}`)
       }
       if (!text(view.tree()).includes('已选 2 条')) throw new Error('工具栏应报出选中条数')
-      await click(view, button(view, '清空选择'))
-      if (button(view, '导入所选（0）') === undefined) throw new Error('再次点击应清空')
+      // 再点一次取消：同一个框，不需要第二个「取消全选」按钮。
+      await change(view, selectAllBox(view), { checked: false })
+      if (button(view, '导入所选（0）') === undefined) throw new Error('再次勾选应清空')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('全选跨过整页，不只当前页', async () => {
+    const many = Array.from({ length: 60 }, (_, index) => ({
+      id: `wb-m${index + 1}`,
+      title: `会话 ${index + 1}`,
+      cwd: 'D:\\proj\\many',
+      projectDir: 'many',
+      createdAt: 1_760_000_000_000 + index,
+      messageCount: 3,
+      alreadyImported: false,
+      deletedInWorkBuddy: false, adopted: false, hidden: false, grouped: false, canSyncBack: true,
+    }))
+    globalThis.fetch = fakeFetch({ sessions: many }).impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      // 一页 50 条，全选要的是 60。
+      if (!text(view.tree()).includes('共 60 个会话')) throw new Error('应分页')
+      await change(view, selectAllBox(view), { checked: true })
+      if (button(view, '导入所选（60）') === undefined) {
+        throw new Error(`全选应跨页勾上 60 条：${text(view.tree()).slice(0, 300)}`)
+      }
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('筛选后全选只作用于筛选结果', async () => {
+    globalThis.fetch = fakeFetch().impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await change(view, textInput(view), { value: '可视化' })
+      await change(view, selectAllBox(view), { checked: true })
+      if (button(view, '导入所选（1）') === undefined) {
+        throw new Error(`筛选后全选应只勾中 1 条：${text(view.tree()).slice(0, 300)}`)
+      }
     } finally { globalThis.fetch = realFetch }
   })
 
@@ -671,7 +781,7 @@ export async function run() {
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      await click(view, button(view, '全选本页'))
+      await change(view, selectAllBox(view), { checked: true })
       await click(view, button(view, '导入所选（2）'))
       if (!text(view.tree()).includes('overrun')) throw new Error('应显示失败原因')
     } finally { globalThis.fetch = realFetch }
@@ -758,24 +868,135 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('WorkBuddy 侧已删除的会话打标且不被全选', async () => {
-    globalThis.fetch = fakeFetch({ sessions: [SESSION_A, SESSION_DELETED] }).impl
+  // --- 列表分组 ---------------------------------------------------------------
+
+  await checkAsync('列表按分组分块：同组相邻，每组一个小标题', async () => {
+    // 三个不同项目 + 一条没有目录的，故意打乱给进来。
+    const rows = [
+      { ...SESSION_A, id: 'wb-a1', title: 'A 的第一个', cwd: 'D:\\proj\\zz' },
+      { ...SESSION_B, id: 'wb-b1', title: 'B 的', cwd: 'D:\\proj\\aa' },
+      { ...SESSION_A, id: 'wb-a2', title: 'A 的第二个', cwd: 'D:\\proj\\zz' },
+      { ...SESSION_A, id: 'wb-n1', title: '没有目录的', cwd: null, projectDir: '' },
+    ]
+    globalThis.fetch = fakeFetch({ sessions: rows }).impl
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
-      if (!text(view.tree()).includes('已删除')) throw new Error('应显示已删除徽章')
-      if (!rowBadges(view, '我早就删掉的会话').includes('已删除')) throw new Error('徽章应在已删除的那一行上')
-      if (!text(view.tree()).includes('你在 WorkBuddy 里已经删过')) throw new Error('应解释这个标记的含义')
+      const keys = groupKeys(view)
+      if (keys.join('|') !== 'D:\\proj\\aa|D:\\proj\\zz|') {
+        throw new Error(`分组应排序且同组相邻，实际: ${keys.join('|')}`)
+      }
+      const headings = groupHeadings(view)
+      if (!headings[0].startsWith('aa1')) throw new Error(`小标题应是组名 + 条数: ${headings.join(' / ')}`)
+      if (!headings[1].startsWith('zz2')) throw new Error(`同组两行只该有一个标题: ${headings.join(' / ')}`)
+      if (!headings[2].startsWith('未分组1')) throw new Error(`没有目录的应落在未分组: ${headings.join(' / ')}`)
 
-      await click(view, button(view, '全选本页'))
-      const importBtn = button(view, '导入所选（1）')
-      if (importBtn === undefined) {
-        throw new Error(`全选应跳过已删除的，只选 1 个: ${text(view.tree()).slice(0, 300)}`)
+      // 同一组的行必须连在一起：A 的两行之间不该隔着 B。
+      const body = text(view.tree())
+      const atFirst = body.indexOf('A 的第一个')
+      const atSecond = body.indexOf('A 的第二个')
+      const atB = body.indexOf('B 的')
+      if (!(atFirst < atSecond && atB < atFirst)) {
+        throw new Error(`同组未相邻: ${[atFirst, atSecond, atB].join(',')}`)
       }
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('已删除的会话可以手动勾选导入', async () => {
+  await checkAsync('已导入栏里未归组的行有徽标，勾选后可以一键归组', async () => {
+    const fetch = fakeFetch({ sessions: [SESSION_DONE, SESSION_UNGROUPED] })
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, tabButton(view, 'imported'))
+      const badges = rowBadges(view, '还没归组的会话')
+      if (!badges.includes('未分组')) throw new Error(`未归组的行应有徽标: ${badges.join(',')}`)
+      if (rowBadges(view, '已经导过的会话').includes('未分组')) throw new Error('已归组的行不该有徽标')
+      if (button(view, '归入分组（1）') !== undefined) throw new Error('没勾选时不该出现归组按钮')
+
+      await change(view, checkbox(view, '还没归组的会话'), { checked: true })
+      const btn = button(view, '归入分组（1）')
+      if (btn === undefined) throw new Error(`勾选未归组的行后应出现归组按钮: ${text(view.tree()).slice(0, 300)}`)
+      const before = toastNode(view)?.props?.key ?? 0
+      await click(view, btn)
+      const post = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/regroup'))
+      if (post === undefined) throw new Error('应发起归组请求')
+      if (post.body.ids.join(',') !== 'wb-fff') throw new Error(`归组目标: ${post.body.ids.join(',')}`)
+      const toast = toastNode(view)
+      if (toast === undefined || toast.props.key <= before) throw new Error('应弹出归组结果')
+      if (!String(toast.props.text).includes('已把 1 个会话归入原分组')) throw new Error(`toast 文案: ${toast.props.text}`)
+      if (rowBadges(view, '还没归组的会话').includes('未分组')) throw new Error('归组后徽标应消失')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  // --- 软删除 / 回收站 ---------------------------------------------------------
+
+  await checkAsync('删除所选是软删除：离开待导入，落进回收站栏', async () => {
+    const fetch = fakeFetch()
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await change(view, checkbox(view, '写一个可视化页面'), { checked: true })
+      await click(view, button(view, '删除所选（1）'))
+      const post = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/hide'))
+      if (post === undefined) throw new Error('应发起 hide 请求')
+      if (post.body.ids.join(',') !== 'wb-bbb') throw new Error(`删除目标: ${post.body.ids.join(',')}`)
+
+      const body = text(view.tree())
+      if (body.includes('写一个可视化页面')) throw new Error('软删除后不该还在待导入栏')
+      if (tabText(view, 'pending') !== '待导入1') throw new Error(`待导入条数应减一: ${tabText(view, 'pending')}`)
+      if (tabText(view, 'recycle') !== '回收站1') throw new Error(`回收站条数应加一: ${tabText(view, 'recycle')}`)
+      if (button(view, '删除所选（0）').props.disabled !== true) throw new Error('删除后选择应清空')
+
+      // 回收站栏里能看到它，并且能恢复。
+      await click(view, tabButton(view, 'recycle'))
+      if (!text(view.tree()).includes('写一个可视化页面')) throw new Error('回收站应列出被划掉的会话')
+      if (button(view, '删除所选（0）') !== undefined) throw new Error('回收站栏不该有删除按钮')
+      await change(view, checkbox(view, '写一个可视化页面'), { checked: true })
+      const restore = button(view, '恢复所选（1）')
+      if (restore === undefined) throw new Error(`回收站里应能恢复: ${text(view.tree()).slice(0, 300)}`)
+      await click(view, restore)
+      const undo = fetch.calls.find(c => c.method === 'POST' && c.url.endsWith('/unhide'))
+      if (undo === undefined) throw new Error('应发起 unhide 请求')
+      if (undo.body.ids.join(',') !== 'wb-bbb') throw new Error(`恢复目标: ${undo.body.ids.join(',')}`)
+
+      await click(view, tabButton(view, 'pending'))
+      if (!text(view.tree()).includes('写一个可视化页面')) throw new Error('恢复后应回到待导入栏')
+      if (tabText(view, 'recycle') !== '回收站0') throw new Error('恢复后回收站应清空')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('回收站为空时给出自己的空状态', async () => {
+    globalThis.fetch = fakeFetch().impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, tabButton(view, 'recycle'))
+      if (!text(view.tree()).includes('回收站是空的')) {
+        throw new Error(`回收站空态: ${text(view.tree()).slice(0, 240)}`)
+      }
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('WorkBuddy 侧删过的会话不再打标、也不被全选排除', async () => {
+    globalThis.fetch = fakeFetch({ sessions: [SESSION_A, SESSION_DELETED] }).impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      const body = text(view.tree())
+      if (body.includes('已删除')) throw new Error('「已删除」标记应当已经去掉')
+      if (rowBadges(view, '我早就删掉的会话').length > 0) throw new Error('那一行不该再有任何徽章')
+
+      // 全选包含它：想排除哪一条，用本页自己的删除，而不是替用户猜。
+      await change(view, selectAllBox(view), { checked: true })
+      if (button(view, '导入所选（2）') === undefined) {
+        throw new Error(`全选应包含 WorkBuddy 侧删过的会话: ${text(view.tree()).slice(0, 300)}`)
+      }
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('WorkBuddy 侧删过的会话可以手动勾选导入', async () => {
     const fetch = fakeFetch({ sessions: [SESSION_A, SESSION_DELETED] })
     globalThis.fetch = fetch.impl
     try {

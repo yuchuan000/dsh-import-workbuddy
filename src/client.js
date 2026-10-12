@@ -30,12 +30,17 @@ window.__ModuleLoader__.load({
     // dsh-session-recycle's settings page: the list is the reason to open this
     // page, and a form above it pushes the list below the fold.
     const CONFIG_ID = 'import-workbuddy-config'
-    // The two lists as tabs on one section. They are the same candidates read
-    // two ways — what is still to come across, and what already has — and the
-    // actions differ per tab (import vs sync back / put back), so a tab that
-    // names the state keeps each toolbar to the verb that fits it.
+    // The lists as tabs on one section. They are the same candidates read
+    // three ways — what is still to come across, what already has, and what the
+    // user swept aside — and the actions differ per tab (import vs sync back /
+    // put back), so a tab that names the state keeps each toolbar to the verb
+    // that fits it.
     const TAB_PENDING = 'pending'
     const TAB_IMPORTED = 'imported'
+    // The third one is this page's own bin, not WorkBuddy's: a candidate swept
+    // out of the pending list waits here rather than vanishing. It sits after
+    // the two real states because it holds leftovers, not a stage of the flow.
+    const TAB_RECYCLE = 'recycle'
 
     // --- locale -----------------------------------------------------------------
 
@@ -46,6 +51,7 @@ window.__ModuleLoader__.load({
       'settings.tabsLabel': '导入页签',
       'settings.tabPending': '待导入',
       'settings.tabImported': '已导入',
+      'settings.tabRecycle': '回收站',
       'settings.tabCount': '共 {n} 条',
       'settings.config': '配置',
       'settings.configTitle': '导入设置',
@@ -53,14 +59,14 @@ window.__ModuleLoader__.load({
       'settings.close': '关闭',
       'settings.desc': '把本机 WorkBuddy（腾讯 CodeBuddy）的会话导入 DSH，成为可继续对话的原生会话。勾选要导入的内容，重复导入会自动跳过。',
       'settings.importedHint': '已经在 DSH 里的会话。勾选可以把 DSH 这边新产生的对话回写进 WorkBuddy 原会话；接管过来的还可以还原回去。',
+      'settings.recycleHint': '从待导入里划掉的会话。恢复后回到待导入列表；WorkBuddy 里的轨迹文件从头到尾没有被改动过。',
       'settings.plan': '导入方式：{mode}｜工具调用：{tools}',
       'settings.planTools.keep': '保留',
       'settings.planTools.text': '转为纯文本',
       'settings.planTools.drop': '丢弃',
       'settings.root': 'WorkBuddy 目录：{root}',
       'settings.filter': '筛选（标题 / 目录 / id）',
-      'settings.selectPage': '全选本页',
-      'settings.selectNone': '清空选择',
+      'settings.selectAll': '全选',
       'settings.refresh': '刷新列表',
       'settings.count': '共 {n} 个会话',
       'settings.pagePosition': '第 {page}/{pages} 页',
@@ -72,10 +78,11 @@ window.__ModuleLoader__.load({
       'settings.loading': '正在读取 WorkBuddy 会话…',
       'settings.empty': '没有发现可导入的 WorkBuddy 会话。',
       'settings.emptyImported': '还没有导入过的会话。',
+      'settings.emptyRecycle': '回收站是空的。',
       'settings.filterEmpty': '没有符合条件的会话。',
       'batch.selected': '已选 {n} 条',
       'settings.badgeDone': '已导入',
-      'settings.badgeDeleted': '已删除',
+      'settings.badgeUngrouped': '未分组',
       'settings.badgeAdopted': '已接管',
       'settings.colTitle': '会话',
       'settings.options': '导入选项',
@@ -89,6 +96,28 @@ window.__ModuleLoader__.load({
       'settings.importedOne': '已导入 {n} 个会话',
       'settings.sidebarHint': '会话已写入，侧边栏已刷新；如未出现请重启 DSH。',
       'settings.unknownError': '未知错误',
+
+      // 归组：导入会按会话原本的工作目录挂进 DSH 的分组，分组名就是那个目录名。
+      'settings.regroup': '归入分组（{n}）',
+      'settings.regrouping': '正在归组…',
+      'settings.regroupedOne': '已把 {n} 个会话归入原分组',
+      'settings.regroupPartial': '已归入 {ok} 个，{fail} 个失败',
+      'settings.regroupFailures': '归入分组失败：{failures}',
+
+      // 软删除（本页自己的回收站）。
+      'settings.deletePick': '删除所选（{n}）',
+      'settings.deleting': '正在移入…',
+      'settings.deletedPick': '已移入回收站 {n} 条',
+      'settings.deletedPickPartial': '已移入回收站 {ok} 条，{fail} 条失败',
+      'settings.deleteFailures': '移入回收站失败：{failures}',
+      'settings.restorePick': '恢复所选（{n}）',
+      'settings.restoring': '正在恢复…',
+      'settings.restoredPick': '已恢复 {n} 条',
+      'settings.restoredPickPartial': '已恢复 {ok} 条，{fail} 条失败',
+      'settings.restoreFailures': '恢复失败：{failures}',
+
+      // 列表里的分组小标题。没有目录的会话归到一个没有名字的组。
+      'settings.groupUngrouped': '未分组',
 
       // 归属模式
       'settings.mode': '归属方式',
@@ -105,12 +134,12 @@ window.__ModuleLoader__.load({
       'settings.syncFailures': '回写失败：{failures}',
       'settings.syncOnlyImported': '只能回写已经在 DSH 里的会话',
       'settings.restoreButton': '还原到 WorkBuddy',
-      'settings.restoring': '正在还原…',
+      'settings.restoringOne': '正在还原…',
       'settings.restoredOne': '已还原 {n} 个会话到 WorkBuddy',
       'settings.restoreNone': '没有已接管的会话',
       'settings.restoreFailures': '还原失败：{failures}',
-      'settings.deletedHint': '这些会话你在 WorkBuddy 里已经删过（软件只打了删除标记，轨迹文件还留着）。默认不勾选，需要时可以手动选上。',
       'settings.adoptFailedHint': '会话已导入，但搬走源文件失败：{failures}',
+      'settings.importRegroupFailed': '会话已导入，但没能归入它原来的分组：{failures}',
     }
 
     const en = {
@@ -118,6 +147,7 @@ window.__ModuleLoader__.load({
       'settings.tabsLabel': 'Import page tabs',
       'settings.tabPending': 'Pending',
       'settings.tabImported': 'Imported',
+      'settings.tabRecycle': 'Recycle bin',
       'settings.tabCount': '{n} entries',
       'settings.config': 'Settings',
       'settings.configTitle': 'Import settings',
@@ -125,14 +155,14 @@ window.__ModuleLoader__.load({
       'settings.close': 'Close',
       'settings.desc': 'Import local WorkBuddy (Tencent CodeBuddy) conversations into DSH as native, resumable sessions. Tick what you want; re-importing skips automatically.',
       'settings.importedHint': 'Conversations already in DSH. Tick one to write later turns in DSH back to the WorkBuddy original; anything adopted can also be put back.',
+      'settings.recycleHint': 'Conversations you swept out of the pending list. Restoring puts them back there; the WorkBuddy transcript was never touched either way.',
       'settings.plan': 'Import as: {mode} · Tool calls: {tools}',
       'settings.planTools.keep': 'kept',
       'settings.planTools.text': 'as plain text',
       'settings.planTools.drop': 'dropped',
       'settings.root': 'WorkBuddy root: {root}',
       'settings.filter': 'Filter (title / folder / id)',
-      'settings.selectPage': 'Select page',
-      'settings.selectNone': 'Clear selection',
+      'settings.selectAll': 'Select all',
       'settings.refresh': 'Refresh',
       'settings.count': '{n} conversation(s)',
       'settings.pagePosition': 'Page {page} of {pages}',
@@ -144,10 +174,11 @@ window.__ModuleLoader__.load({
       'settings.loading': 'Reading WorkBuddy conversations…',
       'settings.empty': 'No importable WorkBuddy conversations found.',
       'settings.emptyImported': 'Nothing has been imported yet.',
+      'settings.emptyRecycle': 'The recycle bin is empty.',
       'settings.filterEmpty': 'Nothing matches the filter.',
       'batch.selected': '{n} selected',
       'settings.badgeDone': 'Imported',
-      'settings.badgeDeleted': 'Deleted',
+      'settings.badgeUngrouped': 'Ungrouped',
       'settings.badgeAdopted': 'Adopted',
       'settings.colTitle': 'Conversation',
       'settings.options': 'Import options',
@@ -161,6 +192,25 @@ window.__ModuleLoader__.load({
       'settings.importedOne': 'Imported {n} conversation(s)',
       'settings.sidebarHint': 'Sessions written and the sidebar refreshed; restart DSH if they do not show up.',
       'settings.unknownError': 'unknown error',
+
+      'settings.regroup': 'Group them ({n})',
+      'settings.regrouping': 'Grouping…',
+      'settings.regroupedOne': 'Grouped {n} conversation(s) into their original group',
+      'settings.regroupPartial': 'Grouped {ok}, {fail} failed',
+      'settings.regroupFailures': 'Could not group: {failures}',
+
+      'settings.deletePick': 'Delete selected ({n})',
+      'settings.deleting': 'Moving…',
+      'settings.deletedPick': 'Moved {n} to the recycle bin',
+      'settings.deletedPickPartial': 'Moved {ok} to the recycle bin, {fail} failed',
+      'settings.deleteFailures': 'Could not move to the recycle bin: {failures}',
+      'settings.restorePick': 'Restore selected ({n})',
+      'settings.restoring': 'Restoring…',
+      'settings.restoredPick': 'Restored {n} entry(ies)',
+      'settings.restoredPickPartial': 'Restored {ok}, {fail} failed',
+      'settings.restoreFailures': 'Restore failed: {failures}',
+
+      'settings.groupUngrouped': 'Ungrouped',
 
       'settings.mode': 'Ownership',
       'settings.mode.copy': 'Copy (keep the original)',
@@ -176,12 +226,12 @@ window.__ModuleLoader__.load({
       'settings.syncFailures': 'Sync failed: {failures}',
       'settings.syncOnlyImported': 'Only conversations already in DSH can be synced back',
       'settings.restoreButton': 'Put back in WorkBuddy',
-      'settings.restoring': 'Restoring…',
+      'settings.restoringOne': 'Restoring…',
       'settings.restoredOne': 'Restored {n} conversation(s) to WorkBuddy',
       'settings.restoreNone': 'Nothing has been adopted',
       'settings.restoreFailures': 'Restore failed: {failures}',
-      'settings.deletedHint': 'You already deleted these in WorkBuddy (it only marks them; the transcript files survive). Unticked by default — tick them manually if you want them back.',
       'settings.adoptFailedHint': 'Imported, but moving the source file failed: {failures}',
+      'settings.importRegroupFailed': 'Imported, but could not be put back in its original group: {failures}',
     }
 
     // --- locale service bridge ----------------------------------------------------
@@ -271,6 +321,26 @@ window.__ModuleLoader__.load({
     /** Undo for adopt mode: archived files go home, deletion marks are cleared. */
     async function postRestore(ids) {
       return api(`${PREFIX}/restore`, { method: 'POST', body: { ids } })
+    }
+
+    /** Soft delete: the row moves to this page's own bin, nothing on disk moves. */
+    async function postHide(ids) {
+      return api(`${PREFIX}/hide`, { method: 'POST', body: { ids } })
+    }
+
+    /** Take rows back out of the bin, so they show up in the pending list again. */
+    async function postUnhide(ids) {
+      return api(`${PREFIX}/unhide`, { method: 'POST', body: { ids } })
+    }
+
+    /**
+     * Attach already-imported sessions to the group their cwd names.
+     *
+     * The repair for everything imported before the import route learned to do
+     * this itself, and for the ones the workspace registry refused at the time.
+     */
+    async function postRegroup(ids) {
+      return api(`${PREFIX}/regroup`, { method: 'POST', body: { ids } })
     }
 
     // --- sidebar resync ------------------------------------------------------------
@@ -451,14 +521,22 @@ window.__ModuleLoader__.load({
       fontSize: 12, cursor: 'pointer', flex: 'none',
     }
     const disabledBtnStyle = { ...primaryBtnStyle, opacity: 0.5, cursor: 'default' }
+    /** 划进回收站是唯一一个「让东西消失」的动作，所以只有它用红色描边。 */
+    const dangerOutlineBtnStyle = {
+      padding: '6px 12px', borderRadius: 8,
+      border: '1px solid var(--dsw-alias-state-error-primary, #e5484d)',
+      background: 'transparent', color: 'var(--dsw-alias-state-error-primary, #e5484d)',
+      fontSize: 12, cursor: 'pointer', flex: 'none',
+    }
+    const dangerOutlineBtnOffStyle = { ...dangerOutlineBtnStyle, opacity: 0.5, cursor: 'default' }
     const badgeStyle = {
       flex: 'none', fontSize: 11, lineHeight: '16px', padding: '0 8px',
       borderRadius: 8, whiteSpace: 'nowrap',
       color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
       border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4))',
     }
-    // 已删除用警示色：它意味着「你删过这个，现在要把它拿回来」。
-    const deletedBadgeStyle = {
+    // 未归组用警示色：它在说「这一行现在不在任何分组里」，而不是装饰。
+    const warnBadgeStyle = {
       ...badgeStyle,
       color: 'var(--dsw-alias-state-warning-primary, #f5a524)',
       border: '1px solid var(--dsw-alias-state-warning-primary, #f5a524)',
@@ -489,17 +567,49 @@ window.__ModuleLoader__.load({
       borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
     }
     const ghostBtnOffStyle = { ...ghostBtnStyle, opacity: 0.5, cursor: 'default' }
-    const toolbarStyle = {
+    /**
+     * The toolbar, in two rows.
+     *
+     * The filter is a box the user types into; the buttons are things they
+     * press. On one wrapped row the filter shared its line with five buttons and
+     * ended up a 140px slot in the middle of them. It gets its own row now, and
+     * the row under it holds the controls — which is also what lets the
+     * select-all box sit flush left, exactly where each row's own box is.
+     */
+    const filterRowStyle = { padding: '6px 0 0' }
+    const actionRowStyle = {
       display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
-      padding: '6px 0 8px',
-      borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
+      padding: '8px 0',
     }
     const filterInputStyle = {
-      flex: '1 1 180px', minWidth: 140, padding: '5px 10px',
+      width: '100%', boxSizing: 'border-box', padding: '5px 10px',
       fontSize: 12, borderRadius: 8,
       border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4))',
       background: 'transparent', color: 'var(--dsw-alias-label-primary, inherit)',
     }
+    /** The select-all box: shaped like a list row's own, so the parallel reads. */
+    const selectAllStyle = {
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      flex: 'none', cursor: 'pointer', fontSize: 12, lineHeight: '18px',
+    }
+    /**
+     * A group heading inside the pick-list.
+     *
+     * The list is one flat scroll box, so groups need something to be *seen* as
+     * groups: rows are sorted by group and each run is opened by this bar. It is
+     * repeated at the top of every page on purpose — a page that starts in the
+     * middle of a group still has to say which group that is.
+     */
+    const groupHeadingStyle = {
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '6px 10px',
+      fontSize: 12, lineHeight: '18px', fontWeight: 600,
+      color: 'var(--dsw-alias-label-secondary, #8a8a8e)',
+      background: 'var(--dsw-alias-border-l1, rgba(128,128,128,.12))',
+      borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))',
+    }
+    /** The first heading has the box's own top edge; a line there would double it. */
+    const groupHeadingFirstStyle = { ...groupHeadingStyle, borderTop: 'none' }
 
     // --- tab strip --------------------------------------------------------------
     //
@@ -733,8 +843,122 @@ window.__ModuleLoader__.load({
       return { rows: rows.slice(start, start + pageSize), page: safe, pageCount }
     }
 
+    // --- grouping ------------------------------------------------------------------
+    //
+    // Every candidate belongs to a project, and that is the axis the user thinks
+    // in: "the sessions from that repo". The list was flat, so a project's
+    // conversations were scattered through it by import time and finding one
+    // meant reading every row.
+    //
+    // The group is read off the working directory, not off `projectDir`: the
+    // latter is WorkBuddy's own flattened folder name (`d-Users-me-proj`), which
+    // is not what the directory is called. The last path segment is the project
+    // name — and that is, deliberately, the same string DSH titles the workspace
+    // group with once the session is imported, so the two lines of the page agree.
+
+    /** The group a candidate belongs to: its working directory, else the store folder. */
+    function groupKeyOf(row) {
+      const cwd = typeof row?.cwd === 'string' ? row.cwd.trim() : ''
+      if (cwd.length > 0) return cwd
+      const projectDir = typeof row?.projectDir === 'string' ? row.projectDir.trim() : ''
+      return projectDir
+    }
+
+    /** What to print for a group: the project folder name, or '' for none. */
+    function groupLabelOf(key) {
+      if (key.length === 0) return ''
+      const parts = key.split(/[\\/]+/).filter(part => part.length > 0)
+      return parts.length > 0 ? parts[parts.length - 1] : key
+    }
+
     /**
-     * The page's tab strip: the candidate list in its two states, plus the
+     * Rows in group order: same group adjacent, groups by name, no-group last.
+     *
+     * Sorting is what makes the headings meaningful — a heading over an
+     * unsorted run would just be a label that happens to be true once. Order
+     * inside a group is left as the host sent it (newest first).
+     *
+     * @returns {{ row, key, label }[]}
+     */
+    function groupRows(rows) {
+      return rows
+        .map(row => ({ row, key: groupKeyOf(row) }))
+        .sort((a, b) => {
+          if (a.key === b.key) return 0
+          // Sessions with no directory cannot be placed; they go last rather
+          // than first, so the named groups stay at the top where they are read.
+          if (a.key.length === 0) return 1
+          if (b.key.length === 0) return -1
+          return a.key.localeCompare(b.key)
+        })
+        .map(entry => ({ ...entry, label: groupLabelOf(entry.key) }))
+    }
+
+    /**
+     * How many rows each group holds, over the rows currently visible.
+     *
+     * Counted over the filtered list, not the page: the heading is a statement
+     * about the group, and "3" that means "3 on this page" would be a different
+     * statement that changes as you page.
+     */
+    function groupCounts(entries) {
+      const counts = new Map()
+      for (const entry of entries) counts.set(entry.key, (counts.get(entry.key) ?? 0) + 1)
+      return counts
+    }
+
+    /**
+     * One group's heading inside the pick-list.
+     *
+     * `title` carries the full directory so the shortening never hides the only
+     * thing that distinguishes two projects with the same folder name.
+     */
+    function GroupHeading(props) {
+      const { label, groupKey, count, first, __ } = props
+      return React.createElement('div', {
+        style: first ? groupHeadingFirstStyle : groupHeadingStyle,
+        'data-group': groupKey,
+      }, [
+        React.createElement('span', {
+          key: 'name',
+          style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+          title: groupKey,
+        }, label.length > 0 ? label : __('settings.groupUngrouped')),
+        React.createElement('span', { key: 'n', style: tabBadgeStyle }, String(count)),
+      ])
+    }
+
+    /**
+     * The select-all box, at the head of the toolbar's second row.
+     *
+     * A checkbox rather than a button, because it is the same gesture as ticking
+     * a row — and it selects the whole filtered list, not the page: the button
+     * it replaces said "this page", which meant a select-all that silently
+     * stopped at row 50. The filter is what narrows a selection now, and the
+     * count next to it is always the honest number.
+     */
+    function SelectAllBox(props) {
+      const { label, checked, disabled, onToggle } = props
+      return React.createElement('label', {
+        style: {
+          ...selectAllStyle,
+          ...(disabled ? { opacity: 0.5, cursor: 'default' } : {}),
+        },
+      }, [
+        React.createElement('input', {
+          key: 'box',
+          type: 'checkbox',
+          checked: checked === true,
+          disabled: disabled === true,
+          onChange: () => onToggle(),
+          style: { flex: 'none' },
+        }),
+        React.createElement('span', { key: 'l' }, label),
+      ])
+    }
+
+    /**
+     * The page's tab strip: the candidate list in its three states, plus the
      * Configure button.
      *
      * The badge says how many rows each side is holding — the one number that
@@ -748,6 +972,7 @@ window.__ModuleLoader__.load({
       const tabs = [
         { id: TAB_PENDING, label: __('settings.tabPending'), count: props.pending },
         { id: TAB_IMPORTED, label: __('settings.tabImported'), count: props.imported },
+        { id: TAB_RECYCLE, label: __('settings.tabRecycle'), count: props.recycled },
       ]
       return React.createElement('div', { style: tabStripStyle }, [
         React.createElement('div', {
@@ -867,10 +1092,11 @@ window.__ModuleLoader__.load({
      * The import page, registered into `settings.section` so it appears with
      * the harness's own settings pages.
      *
-     * One list in two tabs rather than one long page: the candidates split into
-     * what still has to come across and what already has, because the verb
-     * differs (import vs sync back / put back) and a toolbar with all three in
-     * it makes "which button is mine" a question the user has to answer first.
+     * One list in three tabs rather than one long page: the candidates split into
+     * what still has to come across, what already has, and what the user swept
+     * aside, because the verb differs (import vs sync back / put back vs restore)
+     * and a toolbar with all of them makes "which button is mine" a question the
+     * user has to answer first.
      *
      * The page is a list and nothing else. The import policy used to sit under
      * the list, which meant every visit ended in a form rather than at the rows;
@@ -881,7 +1107,8 @@ window.__ModuleLoader__.load({
      * statement about a row, not about the tab it was made in, and the action
      * buttons already sort the ticks by what the row *is* — import only takes
      * rows that are not in DSH yet, sync only takes rows that can be written
-     * back, put-back only takes rows this plugin adopted.
+     * back, put-back only takes rows this plugin adopted, restore only takes
+     * rows the bin is holding.
      */
     function ImportPanel() {
       const __ = t
@@ -894,7 +1121,12 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState(null)
       const [note, setNote] = useState(null)
       const [syncing, setSyncing] = useState(false)
-      const [restoring, setRestoring] = useState(false)
+      // 三个「目标态」的动作各有自己的忙碌位：它们的目标集合不同，一次只能有
+      // 一个在跑，但哪个在跑决定了按钮上那句话该说什么。
+      const [puttingBack, setPuttingBack] = useState(false)
+      const [grouping, setGrouping] = useState(false)
+      const [hiding, setHiding] = useState(false)
+      const [unhiding, setUnhiding] = useState(false)
       // Paging. `page` is zero-based and the slice is derived (`paginate`), so a
       // filter or an import that shortens the list can never strand the page on
       // a slice it has no way back from.
@@ -903,9 +1135,9 @@ window.__ModuleLoader__.load({
       const [pageSize, setPageSize] = useState(() => readPageSize())
       const [, forceRender] = useState(0)
 
-      // Import / sync / restore are mutually exclusive and all three mutate
-      // something, so one flag gates every control rather than three.
-      const busy = importing || syncing || restoring
+      // 六个动作都会改磁盘或 host 状态，所以一个忙碌位统一闸住全部控件：
+      // 允许并发只会让两批目标在半路上互相看不见。
+      const busy = importing || syncing || puttingBack || grouping || hiding || unhiding
 
       const refresh = useCallback(async (quiet = false) => {
         if (!quiet) setLoading(true)
@@ -933,10 +1165,13 @@ window.__ModuleLoader__.load({
       // when the dialog changes it.
       useEffect(() => configSubscribe(() => forceRender(n => n + 1)), [])
 
-      const pending = sessions.filter(s => !s.alreadyImported)
-      const imported = sessions.filter(s => s.alreadyImported)
+      // 三栏的分界是「这件事现在处于哪一步」，而不是「能不能导入」：
+      // hidden 的行虽然没进过 DSH，但它已经不在待办里了。
+      const pending = sessions.filter(s => s.hidden !== true && s.alreadyImported !== true)
+      const imported = sessions.filter(s => s.hidden !== true && s.alreadyImported === true)
+      const recycled = sessions.filter(s => s.hidden === true)
       const byId = new Map(sessions.map(s => [s.id, s]))
-      const inTab = tab === TAB_PENDING ? pending : imported
+      const inTab = tab === TAB_PENDING ? pending : tab === TAB_IMPORTED ? imported : recycled
 
       const needle = filter.trim().toLowerCase()
       const visible = needle.length === 0
@@ -947,35 +1182,50 @@ window.__ModuleLoader__.load({
           || String(s.projectDir || '').toLowerCase().includes(needle)
           || String(s.id || '').toLowerCase().includes(needle)
         ))
-      // 「全选」跳过 WorkBuddy 侧已删除的：那是用户主动删过的，默认勾上等于复活。
-      // 已导入那栏没有这回事，整页都可选。
-      const selectable = tab === TAB_PENDING
-        ? visible.filter(s => !s.deletedInWorkBuddy)
-        : visible
-      const allVisiblePicked = selectable.length > 0 && selectable.every(s => picked.has(s.id))
-      const anyDeleted = pending.some(s => s.deletedInWorkBuddy)
 
-      // One tick set, three targets. Which rows a button acts on depends on
-      // what the row *is*, so a single list serves import, sync and restore
-      // without three competing selections fighting over the same checkbox.
-      const importIds = [...picked].filter(id => byId.get(id) !== undefined && !byId.get(id).alreadyImported)
-      const syncIds = [...picked].filter(id => byId.get(id)?.alreadyImported === true && byId.get(id).canSyncBack !== false)
-      const restoreIds = [...picked].filter(id => byId.get(id)?.adopted === true)
+      // 分组排序 + 分页。分页作用于「分组条目」而不是裸行，所以一页里不会是
+      // 半个组拼半个组之外的第三种东西——切页只会在组与组之间切。
+      const entries = groupRows(visible)
+      const counts = groupCounts(entries)
+      const { rows: pageEntries, page: safePage, pageCount } = paginate(entries, page, pageSize)
 
-      // Select acts on the page, not on the tab behind it: with 400 candidates
-      // behind a filter, "select all" that reached off-screen would hand the
-      // import button ids the user never saw.
+      // One tick set, five targets. Which rows a button acts on depends on what
+      // the row *is*, so a single list serves every verb without competing
+      // selections fighting over the same checkbox.
+      const importIds = [...picked].filter((id) => {
+        const row = byId.get(id)
+        return row !== undefined && row.hidden !== true && row.alreadyImported !== true
+      })
+      const syncIds = [...picked].filter((id) => {
+        const row = byId.get(id)
+        return row?.hidden !== true && row?.alreadyImported === true && row.canSyncBack !== false
+      })
+      const putBackIds = [...picked].filter(id => byId.get(id)?.hidden !== true && byId.get(id)?.adopted === true)
+      // 归组的候选：已经在 DSH 里、却不在任何分组里的。这个徽标与按钮共用一条
+      // 判断，所以「为什么有按钮」和「哪一行需要它」永远是同一句话。
+      const regroupIds = [...picked].filter((id) => {
+        const row = byId.get(id)
+        return row?.hidden !== true && row?.alreadyImported === true && row.grouped === false
+      })
+      const unhideIds = [...picked].filter(id => byId.get(id)?.hidden === true)
+
+      // Select all reaches the whole filtered list, not the page. It used to
+      // stop at the page on the grounds that selecting rows the user cannot see
+      // is a trap — but the trap was the *silence*, and the fix for that is the
+      // count beside it, which is always the honest number. The filter is the
+      // tool for narrowing; the page size is how you read what you picked.
+      const allVisiblePicked = visible.length > 0 && visible.every(s => picked.has(s.id))
       const toggleAllVisible = useCallback(() => {
         setPicked((prev) => {
           const next = new Set(prev)
-          if (selectable.every(s => next.has(s.id))) {
-            for (const row of selectable) next.delete(row.id)
+          if (visible.every(s => next.has(s.id))) {
+            for (const row of visible) next.delete(row.id)
           } else {
-            for (const row of selectable) next.add(row.id)
+            for (const row of visible) next.add(row.id)
           }
           return next
         })
-      }, [selectable])
+      }, [visible])
 
       const togglePick = useCallback((id) => {
         setPicked((prev) => {
@@ -1022,18 +1272,28 @@ window.__ModuleLoader__.load({
                 }),
             'success',
           )
-          // 接管失败是「导进来了但源文件没搬走」，不是「没导进来」：单独一条
-          // 提示，绝不混进 resultFailures 让人以为会话丢失。
+          // 三种「事情没全成」各有各的说法，谁也不该盖掉谁：接管失败是「进来了
+          // 但源文件没搬走」，逐条失败是「没进来」，归组失败是「进来了但没回到
+          // 原来的分组」。合成一段列出，读的人不用去猜哪句是最后写的那句。
+          const problems = []
           const adoptFailures = result.adoptFailed ?? []
           if (adoptFailures.length > 0) {
-            setNote(__('settings.adoptFailedHint', {
+            problems.push(__('settings.adoptFailedHint', {
               failures: adoptFailures.slice(0, 5).map(f => `${f.id}: ${f.error}`).join('\n'),
             }))
-          } else if (result.failed.length > 0) {
-            setNote(__('settings.resultFailures', {
+          }
+          if (result.failed.length > 0) {
+            problems.push(__('settings.resultFailures', {
               failures: result.failed.slice(0, 5).map(f => `${f.id}: ${f.error}`).join('\n'),
             }))
           }
+          const regroupFailures = result.regroupFailed ?? []
+          if (regroupFailures.length > 0) {
+            problems.push(__('settings.importRegroupFailed', {
+              failures: regroupFailures.slice(0, 5).map(f => `${f.id}: ${f.error}`).join('\n'),
+            }))
+          }
+          if (problems.length > 0) setNote(problems.join('\n\n'))
         } catch (reason) {
           setError(reason?.message ?? String(reason))
         }
@@ -1073,14 +1333,19 @@ window.__ModuleLoader__.load({
         setSyncing(false)
       }, [syncIds, refresh, __])
 
-      /** Undo for adopt mode: archived files go home, deletion marks clear. */
-      const onRestore = useCallback(async () => {
-        if (restoreIds.length === 0) return
-        setRestoring(true)
+      /**
+       * Undo for adopt mode: archived files go home, deletion marks clear.
+       *
+       * Distinct from the recycle tab's restore, which only edits this plugin's
+       * own manifest — hence the separate flag and the separate wording.
+       */
+      const onPutBack = useCallback(async () => {
+        if (putBackIds.length === 0) return
+        setPuttingBack(true)
         setError(null)
         setNote(null)
         try {
-          const result = await postRestore(restoreIds)
+          const result = await postRestore(putBackIds)
           await refresh(true)
           showToast(
             __('settings.restoredOne', { n: (result.restored ?? []).length }),
@@ -1094,10 +1359,108 @@ window.__ModuleLoader__.load({
         } catch (reason) {
           setError(reason?.message ?? String(reason))
         }
-        setRestoring(false)
-      }, [restoreIds, refresh, __])
+        setPuttingBack(false)
+      }, [putBackIds, refresh, __])
 
-      const { rows: pageRows, page: safePage, pageCount } = paginate(visible, page, pageSize)
+      /**
+       * Attach already-imported sessions to the group their cwd names.
+       *
+       * Imports made before the import route learned to attach — or ones the
+       * workspace registry refused at the time — sit under Ungrouped with no way
+       * back. This is that way back: same host code path as the import, so a row
+       * that still cannot be grouped reports why instead of silently staying put.
+       */
+      const onRegroup = useCallback(async () => {
+        if (regroupIds.length === 0) return
+        setGrouping(true)
+        setError(null)
+        setNote(null)
+        try {
+          const result = await postRegroup(regroupIds)
+          await refresh(true)
+          const ok = (result.grouped ?? []).length
+          const failed = result.failed ?? []
+          showToast(
+            failed.length === 0
+              ? __('settings.regroupedOne', { n: ok })
+              : __('settings.regroupPartial', { ok, fail: failed.length }),
+            ok > 0 ? 'success' : undefined,
+          )
+          if (failed.length > 0) {
+            setNote(__('settings.regroupFailures', {
+              failures: failed.slice(0, 5).map(f => `${f.id}: ${f.error}`).join('\n'),
+            }))
+          }
+        } catch (reason) {
+          setError(reason?.message ?? String(reason))
+        }
+        setGrouping(false)
+      }, [regroupIds, refresh, __])
+
+      /**
+       * Sweep the ticked pending rows into this page's bin.
+       *
+       * Nothing on disk moves: hiding is a line in the plugin's own manifest, so
+       * the row is back in the pending list the moment it is restored, and
+       * WorkBuddy never hears about it.
+       */
+      const onHide = useCallback(async () => {
+        const targets = importIds
+        if (targets.length === 0) return
+        setHiding(true)
+        setError(null)
+        setNote(null)
+        try {
+          const result = await postHide(targets)
+          setPicked(new Set())
+          await refresh(true)
+          const failed = result.failed ?? []
+          showToast(
+            failed.length === 0
+              ? __('settings.deletedPick', { n: targets.length })
+              : __('settings.deletedPickPartial', { ok: targets.length - failed.length, fail: failed.length }),
+            'success',
+          )
+          if (failed.length > 0) {
+            setNote(__('settings.deleteFailures', {
+              failures: failed.slice(0, 5).map(f => `${f.id}: ${f.error}`).join('\n'),
+            }))
+          }
+        } catch (reason) {
+          setError(reason?.message ?? String(reason))
+        }
+        setHiding(false)
+      }, [picked, byId, refresh, __])
+
+      /** Put the ticked bin entries back in the pending list. */
+      const onUnhide = useCallback(async () => {
+        if (unhideIds.length === 0) return
+        setUnhiding(true)
+        setError(null)
+        setNote(null)
+        try {
+          const result = await postUnhide(unhideIds)
+          setPicked(new Set())
+          await refresh(true)
+          const restored = result.restored ?? []
+          const failed = result.failed ?? []
+          showToast(
+            failed.length === 0
+              ? __('settings.restoredPick', { n: restored.length })
+              : __('settings.restoredPickPartial', { ok: restored.length, fail: failed.length }),
+            'success',
+          )
+          if (failed.length > 0) {
+            setNote(__('settings.restoreFailures', {
+              failures: failed.slice(0, 5).map(f => `${f.id}: ${f.error}`).join('\n'),
+            }))
+          }
+        } catch (reason) {
+          setError(reason?.message ?? String(reason))
+        }
+        setUnhiding(false)
+      }, [unhideIds, refresh, __])
+
       const modeHint = __(`settings.mode.${importOptions.mode}`)
       const toolsHint = importOptions.noTools
         ? __('settings.planTools.drop')
@@ -1112,29 +1475,59 @@ window.__ModuleLoader__.load({
               disabled: importIds.length === 0 || busy,
               onClick: onImport,
             }, importing ? __('settings.importing') : __('settings.import', { n: importIds.length })),
+            React.createElement('button', {
+              key: 'hide',
+              type: 'button',
+              style: importIds.length === 0 || busy ? dangerOutlineBtnOffStyle : dangerOutlineBtnStyle,
+              disabled: importIds.length === 0 || busy,
+              onClick: onHide,
+            }, hiding ? __('settings.deleting') : __('settings.deletePick', { n: importIds.length })),
           ]
-        // 回写与还原只在有对应目标时出现：按钮常驻会让「现在该按哪个」变成
-        // 一个要用户先想清楚的问题，而多数时候答案只有一个。
-        : [
-            syncIds.length > 0 || syncing
-              ? React.createElement('button', {
-                  key: 'sync',
-                  type: 'button',
-                  style: syncIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
-                  disabled: syncIds.length === 0 || busy,
-                  onClick: onSync,
-                }, syncing ? __('settings.syncing') : __('settings.syncButton', { n: syncIds.length }))
-              : null,
-            restoreIds.length > 0 || restoring
-              ? React.createElement('button', {
-                  key: 'restore',
-                  type: 'button',
-                  style: restoreIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
-                  disabled: restoreIds.length === 0 || busy,
-                  onClick: onRestore,
-                }, restoring ? __('settings.restoring') : __('settings.restoreButton'))
-              : null,
-          ]
+        // 目标态的动作只在真有对应目标时出现：按钮常驻会让「现在该按哪个」变成
+        // 一个要用户先想清楚的问题，而多数时候答案只有一个（甚至没有）。
+        : tab === TAB_IMPORTED
+          ? [
+              syncIds.length > 0 || syncing
+                ? React.createElement('button', {
+                    key: 'sync',
+                    type: 'button',
+                    style: syncIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
+                    disabled: syncIds.length === 0 || busy,
+                    onClick: onSync,
+                  }, syncing ? __('settings.syncing') : __('settings.syncButton', { n: syncIds.length }))
+                : null,
+              regroupIds.length > 0 || grouping
+                ? React.createElement('button', {
+                    key: 'regroup',
+                    type: 'button',
+                    style: regroupIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
+                    disabled: regroupIds.length === 0 || busy,
+                    onClick: onRegroup,
+                  }, grouping ? __('settings.regrouping') : __('settings.regroup', { n: regroupIds.length }))
+                : null,
+              putBackIds.length > 0 || puttingBack
+                ? React.createElement('button', {
+                    key: 'putback',
+                    type: 'button',
+                    style: putBackIds.length === 0 || busy ? disabledBtnStyle : ghostBtnStyle,
+                    disabled: putBackIds.length === 0 || busy,
+                    onClick: onPutBack,
+                  }, puttingBack ? __('settings.restoringOne') : __('settings.restoreButton'))
+                : null,
+            ]
+          : [
+              React.createElement('button', {
+                key: 'unhide',
+                type: 'button',
+                style: unhideIds.length === 0 || busy ? disabledBtnStyle : primaryBtnStyle,
+                disabled: unhideIds.length === 0 || busy,
+                onClick: onUnhide,
+              }, unhiding ? __('settings.restoring') : __('settings.restorePick', { n: unhideIds.length })),
+            ]
+
+      const emptyText = tab === TAB_PENDING
+        ? __('settings.empty')
+        : tab === TAB_IMPORTED ? __('settings.emptyImported') : __('settings.emptyRecycle')
 
       return React.createElement('div', { style: { padding: '4px 0 8px' } }, [
         React.createElement(ImportTabs, {
@@ -1142,16 +1535,19 @@ window.__ModuleLoader__.load({
           tab,
           pending: pending.length,
           imported: imported.length,
+          recycled: recycled.length,
           loading,
           onTab,
           __,
         }),
 
         // Hint for the open tab. It is the first thing under the strip because
-        // it answers "which of the two am I looking at" before the rows do.
+        // it answers "which of the three am I looking at" before the rows do.
         React.createElement('div', {
           key: 'hint', style: { ...metaStyle, margin: '8px 0 0' },
-        }, tab === TAB_PENDING ? __('settings.desc') : __('settings.importedHint')),
+        }, tab === TAB_PENDING
+          ? __('settings.desc')
+          : tab === TAB_IMPORTED ? __('settings.importedHint') : __('settings.recycleHint')),
 
         // The policy is behind a button, so the one line that quotes it stays
         // on the page: without it the mode is invisible exactly while it is
@@ -1161,42 +1557,48 @@ window.__ModuleLoader__.load({
               __('settings.plan', { mode: modeHint, tools: toolsHint }))
           : null,
 
-        tab === TAB_PENDING && anyDeleted
-          ? React.createElement('div', { key: 'deleted-hint', style: { ...metaStyle, margin: '4px 0 0' } },
-              __('settings.deletedHint'))
-          : null,
-
         // Toolbar: filter, select helpers, refresh, the selection count, and the
         // verbs that fit this tab.
-        React.createElement('div', { key: 'bar', style: toolbarStyle }, [
-          React.createElement('input', {
-            key: 'filter',
-            type: 'text',
-            value: filter,
-            placeholder: __('settings.filter'),
-            // A filter is a new list: page 1 is where the user expects to be.
-            onChange: (event) => { setFilter(event.target.value); setPage(0) },
-            style: filterInputStyle,
-            'aria-label': __('settings.filter'),
-          }),
-          React.createElement('button', {
-            key: 'all',
-            type: 'button',
-            style: selectable.length === 0 || busy ? ghostBtnOffStyle : ghostBtnStyle,
-            disabled: selectable.length === 0 || busy,
-            onClick: toggleAllVisible,
-          }, allVisiblePicked ? __('settings.selectNone') : __('settings.selectPage')),
-          React.createElement('button', {
-            key: 'refresh',
-            type: 'button',
-            style: loading || busy ? ghostBtnOffStyle : ghostBtnStyle,
-            disabled: loading || busy,
-            onClick: () => refresh(),
-          }, __('settings.refresh')),
-          React.createElement('span', {
-            key: 'picked', style: { ...metaStyle, margin: 0 },
-          }, __('batch.selected', { n: picked.size })),
-          ...actions,
+        // Toolbar, in two rows: the filter is a box you type into and gets its
+        // own line; the controls live under it, starting with the select-all box
+        // at the far left — level with the row boxes it mirrors.
+        React.createElement('div', {
+          key: 'bar',
+          style: { borderTop: '1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.18))' },
+        }, [
+          React.createElement('div', { key: 'filter-row', style: filterRowStyle }, [
+            React.createElement('input', {
+              key: 'filter',
+              type: 'text',
+              value: filter,
+              placeholder: __('settings.filter'),
+              // A filter is a new list: page 1 is where the user expects to be.
+              onChange: (event) => { setFilter(event.target.value); setPage(0) },
+              style: filterInputStyle,
+              'aria-label': __('settings.filter'),
+            }),
+          ]),
+          React.createElement('div', { key: 'action-row', style: actionRowStyle }, [
+            React.createElement(SelectAllBox, {
+              key: 'all',
+              label: __('settings.selectAll'),
+              checked: allVisiblePicked,
+              disabled: visible.length === 0 || busy,
+              onToggle: toggleAllVisible,
+            }),
+            React.createElement('button', {
+              key: 'refresh',
+              type: 'button',
+              style: loading || busy ? ghostBtnOffStyle : ghostBtnStyle,
+              disabled: loading || busy,
+              onClick: () => refresh(),
+            }, __('settings.refresh')),
+            React.createElement('span', {
+              key: 'picked', style: { ...metaStyle, margin: 0 },
+            }, __('batch.selected', { n: picked.size })),
+            React.createElement('span', { key: 'spacer', style: { flex: '1 1 auto' } }),
+            ...actions,
+          ]),
         ]),
 
         loading
@@ -1204,24 +1606,40 @@ window.__ModuleLoader__.load({
               __('settings.loading'))
           : visible.length === 0
             ? React.createElement('div', { key: 'none', style: { ...metaStyle, marginTop: 10 } },
-                inTab.length === 0
-                  ? (tab === TAB_PENDING ? __('settings.empty') : __('settings.emptyImported'))
-                  : __('settings.filterEmpty'))
+                inTab.length === 0 ? emptyText : __('settings.filterEmpty'))
             : React.createElement('div', { key: 'list', style: listBoxStyle },
-                pageRows.map((session, index) => {
+                pageEntries.flatMap((entry, index) => {
+                  const session = entry.row
+                  // A heading opens each group, and page 1 of a group is only
+                  // "the first row of the page": a page that starts mid-group
+                  // still has to say which group these rows belong to.
+                  const opensGroup = index === 0 || pageEntries[index - 1].key !== entry.key
+                  const nodes = []
+                  if (opensGroup) {
+                    nodes.push(React.createElement(GroupHeading, {
+                      key: `group:${entry.key}:${index}`,
+                      groupKey: entry.key,
+                      label: entry.label,
+                      count: counts.get(entry.key) ?? 0,
+                      first: index === 0,
+                      __,
+                    }))
+                  }
                   const badges = []
                   if (session.alreadyImported) {
                     badges.push(React.createElement('span', { key: 'done', style: badgeStyle }, __('settings.badgeDone')))
                   }
-                  if (session.deletedInWorkBuddy) {
-                    badges.push(React.createElement('span', { key: 'deleted', style: deletedBadgeStyle }, __('settings.badgeDeleted')))
+                  // 未归组只在已导入那栏说：待导入的行本来就没进过 DSH，
+                  // 给每一行都挂一个「未分组」等于没挂。
+                  if (tab === TAB_IMPORTED && session.grouped === false) {
+                    badges.push(React.createElement('span', { key: 'ungrouped', style: warnBadgeStyle }, __('settings.badgeUngrouped')))
                   }
                   if (session.adopted) {
                     badges.push(React.createElement('span', { key: 'adopted', style: adoptedBadgeStyle }, __('settings.badgeAdopted')))
                   }
-                  return React.createElement('label', {
+                  nodes.push(React.createElement('label', {
                     key: session.id,
-                    style: index === 0 ? rowStyle : rowBorderStyle,
+                    style: opensGroup ? rowStyle : rowBorderStyle,
                   }, [
                     // 已导入的行仍可勾选：它是回写与还原的目标，不是禁区。
                     // 「不能重复导入」由导入按钮自己过滤（importIds），不该让复选
@@ -1256,7 +1674,8 @@ window.__ModuleLoader__.load({
                       ].join('')),
                     ]),
                     ...badges,
-                  ])
+                  ]))
+                  return nodes
                 })),
 
         // Not rendered while empty: a footer under "nothing to import" is one
