@@ -151,6 +151,13 @@ window.__ModuleLoader__.load({
       'settings.toolsAsText': '工具调用转纯文本',
       'settings.toolsAsTextTip1': '工具调用以文本形式保留在轨迹里。',
       'settings.toolsAsTextTip2': '不生成工具卡片。',
+      'settings.range': '导入范围',
+      'settings.rangeTip1': '长会话整份导入会超出模型上下文，之后每次请求都卡在 5 分钟无输出。',
+      'settings.rangeTip2': '会话太长时，只导入压缩之后的部分。',
+      'settings.planRange': '范围：{range}',
+      'settings.range.all': '全部（历史行为）',
+      'settings.range.compaction': '从最后一次压缩处（推荐）',
+      'settings.range.last': '最近 {n} 条',
       'settings.retry': '重试',
       'settings.result': '完成：新导入 {imported}，已存在跳过 {existing}，空会话 {empty}，失败 {failed}',
       'settings.resultFailures': '部分失败：{failures}',
@@ -301,6 +308,13 @@ window.__ModuleLoader__.load({
       'settings.toolsAsText': 'Tool calls as plain text',
       'settings.toolsAsTextTip1': 'Tool calls stay in the transcript as text.',
       'settings.toolsAsTextTip2': 'No tool cards are generated.',
+      'settings.range': 'How much to import',
+      'settings.rangeTip1': 'A long transcript imported whole blows past the model context; every request then hangs for 5 minutes with no output.',
+      'settings.rangeTip2': 'For oversized conversations, import only what follows the last compaction.',
+      'settings.planRange': 'Range: {range}',
+      'settings.range.all': 'Everything (previous behaviour)',
+      'settings.range.compaction': 'From the last compaction (recommended)',
+      'settings.range.last': 'Last {n} messages',
       'settings.retry': 'Retry',
       'settings.result': 'Done: {imported} imported, {existing} already present, {empty} empty, {failed} failed',
       'settings.resultFailures': 'Some failed: {failures}',
@@ -648,7 +662,22 @@ window.__ModuleLoader__.load({
      * indistinguishable from explicitly asking for the default. The picker only
      * offers real ids once `/presets` has answered.
      */
-    const importOptions = { mode: 'copy', noTools: false, toolsAsText: false, agentPreset: '' }
+    const importOptions = { mode: 'copy', noTools: false, toolsAsText: false, agentPreset: '', range: 'all' }
+
+    /**
+     * The page's range picker, in the two fields the host understands.
+     *
+     * One select drives both because they are not independent knobs: "from the
+     * last compaction" and "last N messages" are two answers to the same
+     * question (how much of an oversized transcript survives), and offering them
+     * side by side would invite setting both and then guessing which won.
+     */
+    function rangeOptions(range) {
+      if (range === 'compaction') return { fromLastCompaction: true }
+      const n = Number(range)
+      if (Number.isInteger(n) && n > 0) return { keepLast: n }
+      return {}
+    }
 
     function setOption(key, value) {
       if (importOptions[key] === value) return
@@ -1798,6 +1827,34 @@ window.__ModuleLoader__.load({
         presetSelect(),
 
         React.createElement('div', { key: 'sep2', style: separatorStyle }),
+        // 导入范围：长会话的生死线，所以放在两个显示开关之前——它们只管轨迹
+        // 好不好看，这个管会话能不能聊。
+        React.createElement('div', { key: 'range-head', style: { ...settingLabelRowStyle, marginBottom: 2 } }, [
+          React.createElement('span', {
+            key: 'l', style: { ...settingLabelStyle, fontWeight: 600 },
+          }, __('settings.range')),
+          React.createElement(InfoTip, {
+            key: 'tip',
+            t: __,
+            label: __('settings.range'),
+            items: [__('settings.rangeTip1'), __('settings.rangeTip2')],
+          }),
+        ]),
+        React.createElement('select', {
+          key: 'range-select',
+          value: importOptions.range,
+          style: selectStyle,
+          'aria-label': __('settings.range'),
+          onChange: (event) => setOption('range', event.target.value),
+        }, [
+          React.createElement('option', { key: 'all', value: 'all' }, __('settings.range.all')),
+          React.createElement('option', { key: 'compaction', value: 'compaction' }, __('settings.range.compaction')),
+          ...[100, 300, 1000].map(n => React.createElement('option', {
+            key: `last-${n}`, value: String(n),
+          }, __('settings.range.last', { n }))),
+        ]),
+
+        React.createElement('div', { key: 'sep3', style: separatorStyle }),
         React.createElement(OptionRow, {
           key: 'opt-notools',
           label: __('settings.noTools'),
@@ -2019,7 +2076,8 @@ window.__ModuleLoader__.load({
           // picked — the host's answer ('standard') is right, but relying on
           // that would make "no choice" and "chose Standard" look identical in
           // the request, which is exactly the confusion this guards against.
-          const options = { ...importOptions }
+          const { range, ...rest } = importOptions
+          const options = { ...rest, ...rangeOptions(range) }
           if (!options.agentPreset) delete options.agentPreset
           const result = await postImport(ids, options)
           // Pull the sidebar in parallel with the panel re-read: the rows the
@@ -2329,6 +2387,11 @@ window.__ModuleLoader__.load({
       }, [unhideIds, refresh, __])
 
       const modeHint = __(`settings.mode.${importOptions.mode}`)
+      const rangeHint = importOptions.range === 'compaction'
+        ? __('settings.range.compaction')
+        : importOptions.range === 'all'
+          ? __('settings.range.all')
+          : __('settings.range.last', { n: importOptions.range })
       const toolsHint = importOptions.noTools
         ? __('settings.planTools.drop')
         : (importOptions.toolsAsText ? __('settings.planTools.text') : __('settings.planTools.keep'))
@@ -2454,7 +2517,14 @@ window.__ModuleLoader__.load({
         // being applied.
         tab === TAB_PENDING
           ? React.createElement('div', { key: 'plan', style: { ...metaStyle, margin: '4px 0 0' } },
-              __('settings.plan', { mode: modeHint, tools: toolsHint }))
+              [
+                __('settings.plan', { mode: modeHint, tools: toolsHint }),
+                // 范围单独再占一行：它是「能不能聊」的那一项，夹在模式那句里
+                // 会被当成又一个修饰词读过去。
+                React.createElement('div', {
+                  key: 'plan-range', style: { ...metaStyle, margin: '2px 0 0' },
+                }, __('settings.planRange', { range: rangeHint })),
+              ])
           : null,
 
         // Toolbar: filter, select helpers, refresh, the selection count, and the

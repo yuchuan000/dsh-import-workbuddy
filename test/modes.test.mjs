@@ -23,7 +23,7 @@ import { DatabaseSync } from 'node:sqlite'
 const here = fileURLToPath(new URL('.', import.meta.url))
 const load = (rel) => import(pathToFileURL(join(here, '..', 'lib', rel)).href)
 
-const { normalizeMode, MODES, collectCandidates, importCandidates } = await load('import-core.mjs')
+const { normalizeMode, MODES, collectCandidates, importCandidates, buildEventsFor, lastCompactionIndex } = await load('import-core.mjs')
 const { workbuddyDbPath, dbSessionId, readWorkbuddyState, isDeletedInWorkBuddy } = await load('workbuddy-state.mjs')
 const { adoptArchiveRoot, adoptSession, restoreAdopted, listAdopted } = await load('adopt.mjs')
 const { zstdFrames, decodeZstdFrames, readDshSession, findSessionArtifact } = await load('dsh-reader.mjs')
@@ -65,6 +65,28 @@ function appendFrame(artifactPath, lines) {
   appendFileSync(artifactPath, frame)
 }
 
+/**
+ * 造一个「压过缩」的 WorkBuddy 会话：压缩摘要之前有一批早期对话，之后有一批
+ * 近期对话。用来钉死 fromLastCompaction 到底切在哪。
+ */
+function compactionJsonl({ id, cwd, before, after, tag = 'cb_summary' }) {
+  const lines = [{ type: 'session-meta', sessionId: id, timestamp: T0, cwd, meta: {} }]
+  let i = 0
+  const push = (role, text) => {
+    lines.push({
+      type: 'message', id: `${id}-${i}`, timestamp: T0 + 1000 + i * 1000, cwd, role,
+      content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }],
+    })
+    i += 1
+  }
+  push('user', '<system-reminder data-role="user-context">\n<user_info>\nWorkspace Folder: D:\\p\n</user_info>\n</system-reminder>\n<user_query>\n早先的问题\n</user_query>')
+  for (let k = 0; k < before; k++) { push('assistant', `早期回答 ${k}`); push('user', `早期追问 ${k}`) }
+  push('user', `<${tag}>\nSummary of the conversation so far.\n</${tag}>`)
+  push('user', 'Please continue with the conversation based on the summarized context above.')
+  for (let k = 0; k < after; k++) { push('assistant', `压缩后回答 ${k}`); push('user', `压缩后追问 ${k}`) }
+  return lines.map(l => JSON.stringify(l)).join('\n') + '\n'
+}
+
 function makeSandbox() {
   const root = mkdtempSync(join(tmpdir(), 'dsh-import-modes-'))
   const wbHome = join(root, 'workbuddy')
@@ -87,6 +109,11 @@ function makeSandbox() {
       const dir = join(wbRoot, project)
       mkdirSync(dir, { recursive: true })
       for (const s of sessions) writeFileSync(join(dir, `${s.id}.jsonl`), workbuddyJsonl(s))
+    },
+    seedRaw(project, id, content) {
+      const dir = join(wbRoot, project)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, `${id}.jsonl`), content)
     },
     restore() {
       if (prevDsh === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prevDsh
@@ -499,6 +526,130 @@ export async function run() {
       })
     } finally {
       sb2.restore()
+    }
+  }
+
+  // --- import-core: 导入范围 -------------------------------------------------
+  //
+  // 为什么要有这整节：会话太长时整份导入会把上下文顶出模型窗口，而事后唯一的
+  // 减肥手段（上下文压缩）本身也是一次模型调用 —— 它同样会超时，于是上下文
+  // 永远降不下来，会话卡死在「每次 5 分钟一个字都没有」。所以只能在导入这一侧
+  // 切，而切错位置比不切更糟：切在工具调用中间会留下没人认领的结果。
+  {
+    const sb = makeSandbox()
+    try {
+      sb.seedRaw('proj', 'sess-cb', compactionJsonl({ id: 'sess-cb', cwd: 'D:\\p', before: 3, after: 2 }))
+      const candidate = collectCandidates(sb.wbRoot)[0]
+      const all = buildEventsFor(candidate, {})
+      const text = (events) => JSON.stringify(events)
+
+      check('默认全量导入：早期对话还在', () => {
+        assert.match(text(all), /早期回答 0/)
+        assert.match(text(all), /压缩后回答 0/)
+      })
+
+      const cut = buildEventsFor(candidate, { fromLastCompaction: true })
+      check('从最后一次压缩处：切掉压缩之前，留下摘要之后', () => {
+        assert.doesNotMatch(text(cut), /早期回答 0/, '压缩之前的对话不该进来')
+        assert.match(text(cut), /Summary of the conversation so far/, '摘要本身要留下')
+        assert.match(text(cut), /压缩后回答 0/)
+      })
+      check('切完之后体量确实小了（不是心理作用）', () => {
+        const answers = (events) => events.filter(e => e.type === 'assistant/message').length
+        // 3 条早期回答 + 2 条压缩后回答 → 只剩那 2 条。
+        assert.equal(answers(all), 5)
+        assert.equal(answers(cut), 2)
+        // 剩下的体积里有一半是系统提示词（它必须留），所以这里比的是消息数
+        // 而不是总字节 —— 字节在小夹具上会被固定开销淹没。
+        assert.ok(text(cut).length < text(all).length, `切完 ${text(cut).length} 应小于全量 ${text(all).length}`)
+      })
+      check('切完之后第 1 条仍是系统提示词（否则上游以 11128 拒绝）', () => {
+        const system = cut.find(event => event.type === 'system/message')
+        assert.ok(system, '压缩之前的第一条消息被切掉后，注入上下文必须还在')
+        assert.equal(system.data.message.role, 'system')
+      })
+
+      check('lastCompactionIndex 认两种压缩标签', () => {
+        for (const tag of ['cb_summary', 'conversation_history_summary']) {
+          const c = { parsed: { header: {}, messages: [
+            { role: 'user', blocks: [{ type: 'text', text: '普通一句' }] },
+            { role: 'user', blocks: [{ type: 'text', text: `<${tag}>\n摘要\n</${tag}>` }] },
+            { role: 'user', blocks: [{ type: 'text', text: '之后一句' }] },
+          ] } }
+          assert.equal(lastCompactionIndex(c.parsed.messages), 1, `${tag} 应命中第 1 条`)
+        }
+      })
+      check('lastCompactionIndex 不认 task-notification 里的 <summary>', () => {
+        const messages = [{ role: 'user', blocks: [{ type: 'text', text: '<task-notification>\n<summary>后台任务完成</summary>\n</task-notification>' }] }]
+        assert.equal(lastCompactionIndex(messages), -1)
+      })
+      check('从没压缩过的会话：老老实实全量导入，不瞎切', () => {
+        const none = buildEventsFor({ parsed: { header: {}, messages: [
+          { role: 'user', blocks: [{ type: 'text', text: '一句' }] },
+          { role: 'user', blocks: [{ type: 'text', text: '又一句' }] },
+        ] } }, { fromLastCompaction: true })
+        assert.match(text(none), /一句/)
+      })
+
+      check('摘要与 <user_query> 同在一条消息里时，切完仍把摘要请回正文', () => {
+        // 真实形态：压缩摘要和用户提问写在同一个 user 消息里，而正文提取只取
+        // <user_query> —— 摘要被剥掉了。切点在它上面时，摘要必须被请回来，
+        // 否则「只导入压缩之后」得到的就是一句孤立的提问，前面一概不知。
+        const mixed = { parsed: { header: { injectedContext: 'SYS' }, messages: [
+          { role: 'user', blocks: [{ type: 'text', text: '很早以前的一句' }] },
+          { role: 'user', blocks: [{ type: 'text', text: '又一句' }] },
+          { role: 'user', blocks: [{ type: 'text', text: '这一轮用户真正问的话' }], compaction: { tag: 'cb_summary', text: '<cb_summary>\n被概括掉的几千条\n</cb_summary>' } },
+          { role: 'assistant', blocks: [{ type: 'text', text: '回答' }] },
+        ] } }
+        const events = buildEventsFor(mixed, { fromLastCompaction: true })
+        const body = JSON.stringify(events)
+        assert.match(body, /被概括掉的几千条/, '摘要必须回到正文里')
+        assert.match(body, /这一轮用户真正问的话/, '用户提问也要在')
+        // 只比对话正文：会话标题是按**完整**消息推的（切掉开头也不该改名），
+        // 它会带着最早期那句，所以不能拿整段 JSON 来断言。
+        const said = events.filter(e => e.type === 'user/message').map(e => JSON.stringify(e.data?.message?.content ?? '')).join('\n')
+        assert.doesNotMatch(said, /很早以前的一句/, '切点之前的不该在')
+        assert.doesNotMatch(said, /又一句/, '切点之前的不该在')
+      })
+      check('切完标题仍按完整消息推：不会退化成 id', () => {
+        const events = buildEventsFor({ parsed: { header: {}, messages: [
+          { role: 'user', blocks: [{ type: 'text', text: '最早的提问' }] },
+          { role: 'user', blocks: [{ type: 'text', text: '后来的' }], compaction: { tag: 'cb_summary', text: '<cb_summary>x</cb_summary>' } },
+        ] } }, { fromLastCompaction: true })
+        assert.match(JSON.stringify(events), /最早的提问/, '标题应保留原始会话的名字')
+      })
+      check('没带摘要标记的消息不会被凭空加上正文', () => {
+        const plain = { parsed: { header: {}, messages: [
+          { role: 'user', blocks: [{ type: 'text', text: '一句' }] },
+          { role: 'user', blocks: [{ type: 'text', text: '另一句' }] },
+        ] } }
+        const events = buildEventsFor(plain, { fromLastCompaction: true })
+        assert.equal(events.filter(e => e.type === 'user/message').length, 2)
+      })
+
+      check('keepLast 只留最后 N 条', () => {
+        const last = buildEventsFor(candidate, { keepLast: 2 })
+        assert.doesNotMatch(text(last), /压缩后回答 0/, '第 2 条之前的不该进来')
+        assert.match(text(last), /压缩后追问 1/)
+      })
+      check('keepLast 大于总数时不切（不是报错）', () => {
+        const last = buildEventsFor(candidate, { keepLast: 9999 })
+        assert.match(text(last), /早期回答 0/)
+      })
+      check('keepLast 非法值（0 / 负数 / 非整数）按「全部」处理', () => {
+        for (const bad of [0, -1, 1.5, 'x', undefined, null]) {
+          assert.match(text(buildEventsFor(candidate, { keepLast: bad })), /早期回答 0/, `keepLast=${JSON.stringify(bad)} 应为全量`)
+        }
+      })
+      check('标题按完整消息推导：切掉开头也不会退化成 id', () => {
+        const events = buildEventsFor(candidate, { fromLastCompaction: true })
+        const head = events.find(event => event.type === 'turn/start')
+        assert.ok(head)
+        // 标题落在会话头里；这里只钉「推导没抛也没变空」这一层。
+        assert.ok(text(events).length > 0)
+      })
+    } finally {
+      sb.restore()
     }
   }
 

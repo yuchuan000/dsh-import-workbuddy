@@ -51,6 +51,12 @@ options:
                          轨迹可见、恢复会话时模型请求合法）
   --truncate <n>         文本/推理块截断到 n 字符（默认不截断）
   --tool-truncate <n>    工具调用参数截断到 n 字符（默认 1000）
+  --keep-last <n>        只导入最后 n 条消息（默认全部）
+  --from-last-compaction
+                         只导入最后一次上下文压缩及其之后的部分。长会话整份
+                         导入会超出模型上下文，之后每次请求都卡在 5 分钟无输
+                         出；而这个开关砍掉的正是已经被压缩摘要概括掉的那一段。
+                         没有压缩记录的会话按全量导入
   --preview <n>          预览前 n 个事件（默认 1）
   --sessions-root <dir>  会话存储根目录（默认 $DSH_HOME/sessions）
   --workbuddy-root <dir> WorkBuddy 会话根目录（默认 ~/.workbuddy/projects，
@@ -217,6 +223,8 @@ async function main() {
     toolsAsText: flags['tools-as-text'] === true,
     truncate: flags.truncate === undefined ? undefined : Number(flags.truncate),
     toolTruncate: flags['tool-truncate'] === undefined ? 1000 : Number(flags['tool-truncate']),
+    keepLast: flags['keep-last'] === undefined ? undefined : Number(flags['keep-last']),
+    fromLastCompaction: flags['from-last-compaction'] === true,
     preview: Number(flags.preview ?? 1),
     sessionsRoot: flags['sessions-root'] ?? join(dshHome(), 'sessions'),
     workbuddyRoot: flags['workbuddy-root'] ?? defaultWorkBuddyRoot(),

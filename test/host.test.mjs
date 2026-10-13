@@ -603,6 +603,24 @@ export async function run() {
       const { status } = await call(route(IMPORT_PATH), { method: 'POST', body: { ids: ['wb-sess-1'], options: { truncate: -1 } } })
       assert.equal(status, 400)
     })
+    // 导入范围：keepLast 与 truncate 同一条数值校验（非负整数），
+    // fromLastCompaction 是布尔开关，别的形状一律当没给。
+    await checkAsync('keepLast 不是非负整数时返回 400', async () => {
+      for (const bad of [-1, 1.5, 'x']) {
+        const { status } = await call(route(IMPORT_PATH), { method: 'POST', body: { ids: ['wb-sess-1'], options: { keepLast: bad } } })
+        assert.equal(status, 400, `keepLast=${JSON.stringify(bad)} 应被拒`)
+      }
+    })
+    await checkAsync('fromLastCompaction 只认真值 true', async () => {
+      for (const accepted of [true]) {
+        const { status } = await call(route(IMPORT_PATH), { method: 'POST', body: { ids: ['wb-sess-1'], options: { fromLastCompaction: accepted } } })
+        assert.equal(status, 200, `fromLastCompaction=${JSON.stringify(accepted)} 应被接受`)
+      }
+      for (const ignored of ['true', 1, null]) {
+        const { status } = await call(route(IMPORT_PATH), { method: 'POST', body: { ids: ['wb-sess-1'], options: { fromLastCompaction: ignored } } })
+        assert.equal(status, 200, `fromLastCompaction=${JSON.stringify(ignored)} 应被忽略而不报错`)
+      }
+    })
 
     // 新路由必须继承同一套护栏：/sync 会往 WorkBuddy 的轨迹文件里追加内容，
     // /restore 会把文件搬回原位，两者都是 DNS-rebinding 页面想要的目标。

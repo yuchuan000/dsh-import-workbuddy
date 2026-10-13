@@ -896,6 +896,60 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
+  await checkAsync('导入范围默认全量，且不把「范围」这个页面字段发给 host', async () => {
+    const fetch = fakeFetch()
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
+      await click(view, button(view, '导入所选（1）'))
+      const post = fetch.calls.find(c => c.method === 'POST')
+      if (post.body.options.range !== undefined) throw new Error(`range 是页面字段，不该发给 host: ${JSON.stringify(post.body.options)}`)
+      if (post.body.options.fromLastCompaction !== undefined) throw new Error('默认不该带 fromLastCompaction')
+      if (post.body.options.keepLast !== undefined) throw new Error('默认不该带 keepLast')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('范围选「从最后一次压缩处」→ 发 fromLastCompaction', async () => {
+    const fetch = fakeFetch()
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await openConfig(view)
+      const select = hosts(view, n => n.type === 'select' && n.props['aria-label'] === '导入范围').at(-1)
+      if (select === undefined) throw new Error('配置里应有「导入范围」下拉')
+      const values = collect(select).filter(n => n.type === 'option').map(n => n.props.value)
+      if (values.join(',') !== 'all,compaction,100,300,1000') throw new Error(`下拉项不对: ${values.join(',')}`)
+      await change(view, select, { value: 'compaction' })
+      await closeConfig(view)
+      await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
+      await click(view, button(view, '导入所选（1）'))
+      const post = fetch.calls.find(c => c.method === 'POST')
+      if (post.body.options.fromLastCompaction !== true) throw new Error(`应传 fromLastCompaction=true: ${JSON.stringify(post.body.options)}`)
+      if (post.body.options.keepLast !== undefined) throw new Error('不该同时带 keepLast')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('范围选「最近 N 条」→ 发 keepLast，且计划行报出所选范围', async () => {
+    const fetch = fakeFetch()
+    globalThis.fetch = fetch.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await openConfig(view)
+      await change(view, hosts(view, n => n.type === 'select' && n.props['aria-label'] === '导入范围').at(-1), { value: '300' })
+      await closeConfig(view)
+      if (!text(view.tree()).includes('范围：最近 300 条')) throw new Error('计划里应报出所选范围')
+      await change(view, checkbox(view, '修一个导入 bug'), { checked: true })
+      await click(view, button(view, '导入所选（1）'))
+      const post = fetch.calls.find(c => c.method === 'POST')
+      if (post.body.options.keepLast !== 300) throw new Error(`应传 keepLast=300: ${JSON.stringify(post.body.options)}`)
+      if (post.body.options.fromLastCompaction !== undefined) throw new Error('不该同时带 fromLastCompaction')
+    } finally { globalThis.fetch = realFetch }
+  })
+
   await checkAsync('筛选按标题 / 目录 / id 过滤', async () => {
     globalThis.fetch = fakeFetch().impl
     try {

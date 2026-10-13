@@ -446,6 +446,9 @@ function normalizeOptions(value) {
   if (value === null || typeof value !== 'object') return options
   if (value.noTools === true) options.noTools = true
   if (value.toolsAsText === true) options.toolsAsText = true
+  // 只导入最后一次压缩之后的部分。没有压缩记录的会话由 import-core 自己决定
+  // 全量导入，这里不做二次判断。
+  if (value.fromLastCompaction === true) options.fromLastCompaction = true
   // 模式走 normalizeMode：未知值回落 copy，绝不因为一个拼错的枚举走成接管。
   if (value.mode !== undefined) options.mode = normalizeMode(value.mode)
   if (typeof value.titlePrefix === 'string' && value.titlePrefix.length > 0) options.titlePrefix = value.titlePrefix
@@ -453,7 +456,7 @@ function normalizeOptions(value) {
   // 非法值会被它归一成 'standard' —— 也就是历史行为，绝不写进无效 id。
   // 存在性校验留给调用方，因为那需要 agent-preset registry。
   if (value.agentPreset !== undefined) options.agentPreset = normalizePresetId(value.agentPreset)
-  for (const key of ['truncate', 'toolTruncate']) {
+  for (const key of ['truncate', 'toolTruncate', 'keepLast']) {
     const raw = value[key]
     if (raw === undefined || raw === null) continue
     const n = Number(raw)
