@@ -542,7 +542,7 @@ node test/run.mjs select    # 只跑选择逻辑
 node test/run.mjs e2e       # 只跑端到端
 ```
 
-223 个用例，零测试框架依赖。所有用例都在**临时沙箱**里搭假的 WorkBuddy 源仓库
+224 个用例，零测试框架依赖。所有用例都在**临时沙箱**里搭假的 WorkBuddy 源仓库
 和假的 `$DSH_HOME`，**绝不触碰你真实的 `~/.dsh` 和 `~/.workbuddy`**。
 
 | 套件 | 用例 | 覆盖 |

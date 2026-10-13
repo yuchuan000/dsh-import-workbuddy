@@ -662,7 +662,14 @@ export async function adoptSelfRepo({ root = selfRoot(), run = gitRun } = {}) {
 async function assertSelfRemote(root, run) {
   const current = await run(['remote', 'get-url', 'origin'], root).catch(() => '')
   if (canonicalRepoUrl(current) === canonicalRepoUrl(SELF_REPO_URL)) return false
-  await run(['remote', 'set-url', 'origin', SELF_REPO_URL], root)
+  // `set-url` refuses a remote that does not exist yet ("No such remote
+  // 'origin'"), which is the ordinary shape of a `.git` that came from
+  // `git init` alone — including the one `adoptSelfRepo` writes when the tree
+  // had no history. Letting that throw turned the whole check into a 500.
+  const names = await run(['remote'], root).catch(() => '')
+  const has = String(names).split('\n').map(name => name.trim()).includes('origin')
+  if (has) await run(['remote', 'set-url', 'origin', SELF_REPO_URL], root)
+  else await run(['remote', 'add', 'origin', SELF_REPO_URL], root)
   return true
 }
 
