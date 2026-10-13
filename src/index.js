@@ -25,8 +25,11 @@
  * the CLI (import.mjs), so the page and the terminal cannot drift apart.
  */
 
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { execFile } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 import { adoptArchiveRoot, listAdopted, restoreAdopted } from '../lib/adopt.mjs'
 import { collectCandidates, importCandidates, normalizeMode } from '../lib/import-core.mjs'
@@ -551,6 +554,258 @@ function presetChangeAllowed(artifactPath) {
   return { ok: true, events }
 }
 
+// --- self-update -------------------------------------------------------------
+//
+// Updating the plugin is two moves, and neither alone is enough: pull upstream
+// into the copy the user installed, then publish those files into the copy DSH
+// actually loads (`syncLoadedCopy`). The second half exists because a `file:`
+// dependency often lands in `node_modules` as a *hard-linked copy* rather than
+// a symlink: git writes the vendor files with a fresh inode, the link does not
+// follow, and the app keeps running the old bytes. That failure is invisible
+// from the interface — this very page can show a feature the loaded code does
+// not have, which is a hard thing to report from inside the thing that is
+// lying to you.
+
+const SELF_NAME = 'dsh-import-workbuddy'
+const SELF_REPO_URL = 'https://github.com/yuchuan000/dsh-import-workbuddy.git'
+const SELF_BRANCH = 'main'
+
+/**
+ * What the plugin is, as paths: anything else in the directory (a `.bak`
+ * folder, something the user left next to it) is not ours to publish into
+ * `node_modules`.
+ */
+const SELF_TOP_FILES = ['package.json', 'cordis.patch.yml', 'README.md']
+const SELF_SUBDIRS = ['src', 'lib', 'bin']
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * The directory this running copy sits in: `src/index.js` is one level below
+ * the package root. Read from the module's own URL rather than `process.cwd()`,
+ * which is the app's, not the plugin's.
+ */
+export function selfRoot() {
+  return dirname(dirname(fileURLToPath(import.meta.url)))
+}
+
+/** Run one git command; trims stdout and throws on any non-zero exit. */
+async function gitRun(args, cwd) {
+  const { stdout } = await execFileAsync('git', args, {
+    cwd,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+    // An update must never wait on a credential prompt nobody can answer: the
+    // button is not a terminal.
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' },
+  })
+  return String(stdout).trim()
+}
+
+/**
+ * A remote written either way is the same repository: `git@host:owner/name` is
+ * the ssh spelling of `https://host/owner/name`.
+ */
+function canonicalRepoUrl(value) {
+  const raw = String(value ?? '').trim().toLowerCase().replace(/\.git$/, '').replace(/\/+$/, '')
+  const ssh = raw.match(/^git@([^:]+):(.+)$/)
+  return (ssh === null ? raw : `${ssh[1]}/${ssh[2]}`).replace(/^https?:\/\//, '')
+}
+
+/**
+ * What is installed here, or why there isn't an answer.
+ *
+ * `repo: false` covers the shape this plugin is most often found in: synced
+ * from another machine, unpacked from a zip, or left behind by an uninstall —
+ * a directory with the right files and no history. Not something the user did
+ * wrong, and nothing they can fix from the page; `adoptSelfRepo` repairs it in
+ * place.
+ */
+export async function readSelfVersion({ root = selfRoot(), run = gitRun } = {}) {
+  try {
+    const [commit, date, branch] = await Promise.all([
+      run(['rev-parse', '--short', 'HEAD'], root),
+      run(['log', '-1', '--format=%cd', '--date=short'], root),
+      run(['rev-parse', '--abbrev-ref', 'HEAD'], root),
+    ])
+    const [remote, porcelain] = await Promise.all([
+      run(['remote', 'get-url', 'origin'], root).catch(() => ''),
+      run(['status', '--porcelain'], root).catch(() => ''),
+    ])
+    return { repo: true, commit, date, branch, remote: remote || '', dirty: porcelain !== '' }
+  } catch (error) {
+    return { repo: false, error: error?.message ?? String(error) }
+  }
+}
+
+/**
+ * Point an existing tree at its own upstream without replacing it.
+ *
+ * `git clone` into a non-empty directory is refused outright, and emptying the
+ * directory first would take local-only files with it. `init` + remote + fetch
+ * keeps untracked files and overwrites tracked ones — which is exactly what
+ * "install the current release" means.
+ */
+export async function adoptSelfRepo({ root = selfRoot(), run = gitRun } = {}) {
+  await run(['init', '-q'], root)
+  await run(['remote', 'remove', 'origin'], root).catch(() => {})
+  await run(['remote', 'add', 'origin', SELF_REPO_URL], root)
+}
+
+/**
+ * Make `origin` be this plugin's own repository.
+ *
+ * The one input here worth correcting rather than trusting: the install below
+ * applies whatever `origin` currently points at, and "update" that follows a
+ * rewritten remote is remote code execution wearing a reassuring label.
+ */
+async function assertSelfRemote(root, run) {
+  const current = await run(['remote', 'get-url', 'origin'], root).catch(() => '')
+  if (canonicalRepoUrl(current) === canonicalRepoUrl(SELF_REPO_URL)) return false
+  await run(['remote', 'set-url', 'origin', SELF_REPO_URL], root)
+  return true
+}
+
+/** Fetch upstream and read where it stands today. */
+async function fetchSelf({ root, run }) {
+  // Shallow on purpose: the newest commit is the answer, and its ancestors are
+  // not something this button owes anybody.
+  await run(['fetch', '--depth', '50', 'origin', SELF_BRANCH], root)
+  const [commit, date] = await Promise.all([
+    run(['rev-parse', '--short', 'FETCH_HEAD'], root),
+    run(['log', '-1', '--format=%cd', '--date=short', 'FETCH_HEAD'], root),
+  ])
+  return { commit, date }
+}
+
+/**
+ * Where upstream stands relative to this copy.
+ *
+ * A copy with no history cannot answer "am I behind" — every commit upstream is
+ * new to it, which is another way of describing a fresh install. Reported as
+ * `available` rather than as an error, because it is the ordinary state of a
+ * copy that was never checked out.
+ */
+export async function checkSelfUpdate({ root = selfRoot(), run = gitRun } = {}) {
+  let installed = await readSelfVersion({ root, run })
+  let adopted = false
+  if (installed.repo !== true) {
+    await adoptSelfRepo({ root, run })
+    adopted = true
+  }
+  const remoteFixed = await assertSelfRemote(root, run)
+  let latest
+  try {
+    latest = await fetchSelf({ root, run })
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'FETCH_FAILED',
+      error: error?.message ?? String(error),
+      installed: installed.repo === true ? { commit: installed.commit, date: installed.date, dirty: installed.dirty } : null,
+      adopted,
+      remoteFixed,
+    }
+  }
+  const behind = installed.repo !== true
+    ? null
+    : Number(await run(['rev-list', '--count', `${installed.commit}..FETCH_HEAD`], root).catch(() => '0')) || 0
+  return {
+    ok: true,
+    installed: installed.repo === true
+      ? { commit: installed.commit, date: installed.date, dirty: installed.dirty }
+      : null,
+    latest,
+    behind,
+    available: behind === null || behind > 0,
+    adopted,
+    remoteFixed,
+  }
+}
+
+/**
+ * Install upstream over this copy; returns what changed, including whether the
+ * copy DSH loads was published to — see `syncLoadedCopy`.
+ */
+export async function applySelfUpdate({ root = selfRoot(), run = gitRun } = {}) {
+  const before = await readSelfVersion({ root, run })
+  if (before.repo !== true) await adoptSelfRepo({ root, run })
+  await assertSelfRemote(root, run)
+  await run(['fetch', '--depth', '50', 'origin', SELF_BRANCH], root)
+  // `-f` overwrites tracked files; untracked ones stay. A named branch rather
+  // than a detached HEAD, so the next check has something to compare from.
+  await run(['checkout', '-f', '-B', SELF_BRANCH, 'FETCH_HEAD'], root)
+  const after = await readSelfVersion({ root, run })
+  const published = syncLoadedCopy({ root })
+  return {
+    from: before.repo === true ? before.commit : null,
+    to: after.repo === true ? after.commit : null,
+    published,
+    restartRequired: true,
+  }
+}
+
+/**
+ * Where DSH loads this plugin from, when that is somewhere else.
+ *
+ * Three layouts worth telling apart: a symlink into `vendor/` (same bytes,
+ * nothing to do), a real directory of hard links (must be overwritten in
+ * place), and no second copy at all.
+ */
+export function loadedCopyRoot(root = selfRoot()) {
+  const profile = dirname(dirname(root))
+  return join(profile, 'node_modules', SELF_NAME)
+}
+
+/**
+ * Publish this copy's files over whichever copy DSH loads.
+ *
+ * `copyFileSync` rather than remove-then-write: it rewrites an existing file's
+ * bytes, so its inode — and therefore any hard link pointing at it — survives.
+ * Deleting first would break the link and leave `node_modules` holding the old
+ * content forever. That is the bug this whole route exists to retire.
+ */
+export function syncLoadedCopy({ root = selfRoot() } = {}) {
+  const target = loadedCopyRoot(root)
+  if (target === root) return { state: 'self', copied: [], failed: [] }
+  if (!existsSync(target)) return { state: 'absent', copied: [], failed: [] }
+  try {
+    if (lstatSync(target).isSymbolicLink()) return { state: 'linked', copied: [], failed: [] }
+  } catch {
+    return { state: 'absent', copied: [], failed: [] }
+  }
+
+  const pairs = []
+  for (const file of SELF_TOP_FILES) {
+    const from = join(root, file)
+    if (existsSync(from)) pairs.push([from, join(target, file), file])
+  }
+  for (const dir of SELF_SUBDIRS) {
+    const from = join(root, dir)
+    if (!existsSync(from) || !statSync(from).isDirectory()) continue
+    try { mkdirSync(join(target, dir), { recursive: true }) } catch { /* see per-file failures below */ }
+    for (const entry of readdirSync(from, { withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      pairs.push([join(from, entry.name), join(target, dir, entry.name), `${dir}/${entry.name}`])
+    }
+  }
+
+  const copied = []
+  const failed = []
+  for (const [from, to, label] of pairs) {
+    try {
+      copyFileSync(from, to)
+      copied.push(label)
+    } catch (error) {
+      // EBUSY is the interesting one — a running DSH holding the file open.
+      // Reported rather than swallowed: "updated" without this note would read
+      // as finished while the app still runs the old bytes.
+      failed.push({ file: label, error: error?.message ?? String(error) })
+    }
+  }
+  return { state: 'copied', copied, failed }
+}
+
 /** Register the client-facing routes; returns a disposer. */
 function registerRoutes(host, ctx) {
   const disposers = []
@@ -1046,6 +1301,38 @@ function registerRoutes(host, ctx) {
           archiveRoot: adoptArchiveRoot(),
           adopted: listAdopted(),
         })
+      } catch (error) {
+        sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })
+      }
+    },
+  }))
+
+  // --- self-update ----------------------------------------------------------
+  //
+  // GET reports where upstream stands; POST installs it. The fence runs before
+  // either, because the POST is `git fetch` followed by a checkout of whatever
+  // came back — update, in the literal sense, over this plugin's own files.
+  //
+  // Why this is a route and not a paragraph in the README: the hard part of
+  // updating this plugin is knowing which of the two copies the app loads, and
+  // that is a fact about this machine, not about the reader.
+  disposers.push(host.register({
+    kind: 'exact',
+    path: `${PREFIX}/update`,
+    handler: async (request, response) => {
+      if (request.method !== 'GET' && request.method !== 'POST') {
+        sendJson(response, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      if (!sameOrigin(ctx, request)) {
+        sendJson(response, 403, { ok: false, error: 'untrusted origin' })
+        return
+      }
+      try {
+        const result = request.method === 'GET'
+          ? await checkSelfUpdate()
+          : await applySelfUpdate()
+        sendJson(response, 200, { ok: true, ...result })
       } catch (error) {
         sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })
       }

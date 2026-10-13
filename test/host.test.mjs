@@ -18,7 +18,8 @@
 
 import { strict as assert } from 'node:assert'
 import {
-  appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
+  appendFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync,
+  readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -44,6 +45,7 @@ const UNHIDE_PATH = '/__dsh-import-workbuddy/unhide'
 const REGROUP_PATH = '/__dsh-import-workbuddy/regroup'
 const PRESETS_PATH = '/__dsh-import-workbuddy/presets'
 const PRESET_PATH = '/__dsh-import-workbuddy/preset'
+const UPDATE_PATH = '/__dsh-import-workbuddy/update'
 
 const ZSTD_C_CHECKSUM = zlib.constants.ZSTD_c_checksumFlag
 const { zstdCompressSync } = zlib
@@ -895,6 +897,263 @@ export async function run() {
 
     sb.restore()
   }
+
+  // --- 12. 检查更新 / 一键更新 -----------------------------------------------
+  //
+  // git 那半场用假的 `run` 驱动：git 在生产里是子进程，这里要钉住的是「发了
+  // 哪些命令」和「答案意味着什么」，而不是这台机器的 git 能不能用。发文件的
+  // 那半场跑真实文件，因为它的契约是 inode 与硬链接 —— 假的证明不了。
+
+  /**
+   * 替身 git：按脚本回答，并记下每一次调用。
+   *
+   * @param head    本副本的提交（默认与上游同，让「已是最新」成为起点）
+   * @param failures 应当失败的子命令，按子命令名索引
+   */
+  function fakeGit({
+    head = 'bbb2222',
+    date = '2026-10-01',
+    upstream = 'bbb2222',
+    upstreamDate = '2026-10-10',
+    behind = 0,
+    remote = 'https://github.com/yuchuan000/dsh-import-workbuddy.git',
+    noRepo = false,
+    failures = {},
+  } = {}) {
+    const calls = []
+    // 真 git 有记忆：init 之后这个目录才像个仓库，checkout 之后 HEAD 才动。
+    // 少了后一条，谁也不知道「装没装成」。
+    const state = { repo: noRepo !== true, head }
+    const run = async (args) => {
+      calls.push(args.join(' '))
+      const failure = failures[args[0]]
+      if (failure !== undefined) throw new Error(failure)
+      const [sub] = args
+      if (sub === 'init') { state.repo = true; return '' }
+      if (!state.repo) throw new Error('not a git repository')
+      if (sub === 'checkout') { state.head = upstream; return '' }
+      switch (sub) {
+        case 'rev-parse':
+          if (args[1] === '--short' && args[2] === 'FETCH_HEAD') return upstream
+          if (args[1] === '--short') return state.head
+          return 'main'
+        case 'log': return args.includes('FETCH_HEAD') ? upstreamDate : date
+        case 'remote': return args[1] === 'get-url' ? remote : ''
+        case 'status': return ''
+        case 'rev-list': return String(behind)
+        default: return ''
+      }
+    }
+    return { run, calls }
+  }
+
+  const ROOT = '/tmp/whatever'
+
+  {
+    const { run } = fakeGit()
+    const answer = await mod.checkSelfUpdate({ root: ROOT, run })
+    check('已是最新：available=false，behind=0，两边都报出来', () => {
+      assert.equal(answer.ok, true)
+      assert.equal(answer.available, false)
+      assert.equal(answer.behind, 0)
+      assert.equal(answer.installed.commit, 'bbb2222')
+      assert.equal(answer.installed.dirty, false)
+      assert.equal(answer.latest.commit, 'bbb2222')
+    })
+  }
+
+  {
+    const { run } = fakeGit({ head: 'aaa1111', behind: 3 })
+    const answer = await mod.checkSelfUpdate({ root: ROOT, run })
+    check('落后 3 个提交：available=true 并报出落后数', () => {
+      assert.equal(answer.available, true)
+      assert.equal(answer.behind, 3)
+      assert.equal(answer.installed.commit, 'aaa1111')
+    })
+  }
+
+  {
+    const { run } = fakeGit({ failures: { fetch: 'could not resolve host' } })
+    const answer = await mod.checkSelfUpdate({ root: ROOT, run })
+    check('连不上上游：ok=false 并保留已装版本，绝不能说「已是最新」', () => {
+      assert.equal(answer.ok, false)
+      assert.equal(answer.code, 'FETCH_FAILED')
+      assert.match(answer.error, /could not resolve host/)
+      // 断网一旦被当成「没有更新」，按钮就永远绿着。
+      assert.equal(answer.available, undefined)
+      assert.notEqual(answer.installed, null)
+    })
+  }
+
+  {
+    const { run, calls } = fakeGit({ noRepo: true })
+    const answer = await mod.checkSelfUpdate({ root: ROOT, run })
+    check('副本不是 git 仓库：就地 git init 接管，不删目录', () => {
+      assert.equal(answer.adopted, true)
+      assert.equal(calls.includes('init -q'), true, '必须 git init，而不是 clone 到非空目录')
+      assert.equal(calls.some(call => call.startsWith('fetch')), true)
+    })
+    check('没有历史的副本一律算可更新，behind 报 null 而不是 0', () => {
+      assert.equal(answer.available, true)
+      assert.equal(answer.behind, null)
+      assert.equal(answer.installed, null)
+    })
+  }
+
+  {
+    const { run, calls } = fakeGit({ remote: 'https://github.com/evil/loot.git' })
+    const answer = await mod.checkSelfUpdate({ root: ROOT, run })
+    check('remote 被指向别处：改回自己的仓库再拉', () => {
+      assert.equal(answer.remoteFixed, true)
+      assert.match(calls.find(call => call.startsWith('remote set-url')), /dsh-import-workbuddy\.git$/)
+    })
+  }
+
+  {
+    const { run, calls } = fakeGit({ remote: 'git@github.com:yuchuan000/dsh-import-workbuddy.git' })
+    const answer = await mod.checkSelfUpdate({ root: ROOT, run })
+    check('ssh 写法的 remote 是同一个仓库，不该被改掉', () => {
+      assert.equal(answer.remoteFixed, false)
+      assert.equal(calls.some(call => call.startsWith('remote set-url')), false)
+    })
+  }
+
+  {
+    const { run, calls } = fakeGit({ head: 'aaa1111', behind: 2 })
+    const done = await mod.applySelfUpdate({ root: ROOT, run })
+    check('安装：checkout 到 FETCH_HEAD，并回报 from → to', () => {
+      assert.equal(calls.includes('checkout -f -B main FETCH_HEAD'), true)
+      assert.equal(done.from, 'aaa1111')
+      assert.equal(done.to, 'bbb2222')
+      assert.equal(done.restartRequired, true)
+    })
+  }
+
+  {
+    const { run, calls } = fakeGit({ head: 'aaa1111', failures: { fetch: 'offline' } })
+    let thrown = null
+    try { await mod.applySelfUpdate({ root: ROOT, run }) } catch (error) { thrown = error }
+    check('拉不到就不动文件：checkout 一步都没执行', () => {
+      assert.ok(thrown, 'fetch 失败必须抛出，让路由回 500')
+      assert.equal(calls.some(call => call.startsWith('checkout')), false)
+    })
+  }
+
+  // --- 12b. 发到 DSH 实际加载的那份 -----------------------------------------
+
+  /** 一份 profile 骨架：<base>/vendor/<name> 加 <base>/node_modules/<name>。 */
+  function makeInstall(files = ['src/index.js']) {
+    const base = mkdtempSync(join(tmpdir(), 'iw-selfupd-'))
+    const root = join(base, 'vendor', 'dsh-import-workbuddy')
+    const target = join(base, 'node_modules', 'dsh-import-workbuddy')
+    for (const dir of ['src', 'lib']) mkdirSync(join(root, dir), { recursive: true })
+    mkdirSync(join(target, 'src'), { recursive: true })
+    for (const file of files) {
+      writeFileSync(join(root, file), 'new\n')
+      writeFileSync(join(target, file), 'old\n')
+    }
+    writeFileSync(join(root, 'README.md'), 'readme-new\n')
+    writeFileSync(join(target, 'README.md'), 'readme-old\n')
+    return { base, root, target }
+  }
+
+  {
+    const { base, root, target } = makeInstall()
+    const file = join(target, 'src', 'index.js')
+    const before = lstatSync(file).ino
+    const done = mod.syncLoadedCopy({ root })
+    check('覆盖了 DSH 加载的那份：内容与 vendor 那份一致', () => {
+      assert.equal(done.state, 'copied')
+      assert.ok(done.copied.includes('src/index.js'))
+      assert.equal(readFileSync(file, 'utf8'), 'new\n')
+      assert.equal(readFileSync(join(target, 'README.md'), 'utf8'), 'readme-new\n')
+    })
+    check('inode 不变：硬链接另一端同步生效（这就是必须先写后覆盖的原因）', () => {
+      // 少数文件系统不给真的 inode；那种情况下不测，而不是假装通过。
+      if (before === 0) return
+      assert.equal(lstatSync(file).ino, before, '覆盖必须复用同一个 inode')
+    })
+    rmSync(base, { recursive: true, force: true })
+  }
+
+  {
+    // 与其断言，不如演示：硬链接两端本是同一个文件，覆盖一端，另一端跟着变。
+    const base = mkdtempSync(join(tmpdir(), 'iw-hardlink-'))
+    const original = join(base, 'repo-file.txt')
+    const linked = join(base, 'node_modules-file.txt')
+    writeFileSync(original, 'old\n')
+    try {
+      linkSync(original, linked)
+      assert.equal(readFileSync(linked, 'utf8'), 'old\n')
+      const { copyFileSync } = await import('node:fs')
+      writeFileSync(join(base, 'next.txt'), 'new\n')
+      copyFileSync(join(base, 'next.txt'), original)
+      check('硬链接两边是同一个文件：覆盖一边，另一边跟着变', () => {
+        assert.equal(readFileSync(linked, 'utf8'), 'new\n')
+      })
+    } catch (error) {
+      check('硬链接两边是同一个文件：覆盖一边，另一边跟着变', () => {
+        process.stdout.write(`\n      （这台机器的文件系统不支持硬链接：${error.message}）\n`)
+      })
+    }
+    rmSync(base, { recursive: true, force: true })
+  }
+
+  {
+    const base = mkdtempSync(join(tmpdir(), 'iw-linked-'))
+    const root = join(base, 'vendor', 'dsh-import-workbuddy')
+    mkdirSync(join(root, 'src'), { recursive: true })
+    writeFileSync(join(root, 'src', 'index.js'), 'new\n')
+    mkdirSync(join(base, 'node_modules'), { recursive: true })
+    symlinkSync(root, join(base, 'node_modules', 'dsh-import-workbuddy'), 'junction')
+    const done = mod.syncLoadedCopy({ root })
+    check('node_modules 里是链接：不用同步，也不许把链接拆开', () => {
+      assert.equal(done.state, 'linked')
+      assert.equal(done.copied.length, 0)
+    })
+    rmSync(base, { recursive: true, force: true })
+  }
+
+  {
+    const base = mkdtempSync(join(tmpdir(), 'iw-absent-'))
+    const root = join(base, 'vendor', 'dsh-import-workbuddy')
+    mkdirSync(join(root, 'src'), { recursive: true })
+    const done = mod.syncLoadedCopy({ root })
+    check('没有 node_modules 副本：跳过，而不是自己造一个', () => {
+      assert.equal(done.state, 'absent')
+      assert.equal(existsSync(join(base, 'node_modules')), false)
+    })
+    rmSync(base, { recursive: true, force: true })
+  }
+
+  {
+    const { base, root, target } = makeInstall()
+    // 用户留在插件旁边的东西。照单全发会把一个备份目录搬进 node_modules，
+    // 那里没人会清理它。
+    mkdirSync(join(root, 'dsh-import-workbuddy.bak-2026'), { recursive: true })
+    writeFileSync(join(root, 'dsh-import-workbuddy.bak-2026', 'client.js'), 'stale\n')
+    writeFileSync(join(root, 'notes.txt'), 'private\n')
+    mod.syncLoadedCopy({ root })
+    check('只发属于插件的文件：备份目录和用户文件不动', () => {
+      assert.equal(existsSync(join(target, 'dsh-import-workbuddy.bak-2026')), false)
+      assert.equal(existsSync(join(target, 'notes.txt')), false)
+      assert.equal(readFileSync(join(target, 'src', 'index.js'), 'utf8'), 'new\n')
+    })
+    rmSync(base, { recursive: true, force: true })
+  }
+
+  // --- 12c. 更新路由本身 -----------------------------------------------------
+
+  await checkAsync('/update 的护栏：跨源 403，其它方法 405', async () => {
+    const { route } = makeHarness()
+    const update = route(UPDATE_PATH)
+    assert.ok(update, '/update 必须注册')
+    // 只走到护栏为止：真的 GET 会去上游拉一次，那是集成测试的事，不是单测的。
+    const cross = await call(update, { headers: { 'sec-fetch-site': 'cross-site' } })
+    assert.equal(cross.status, 403)
+    const bad = await call(update, { method: 'DELETE' })
+    assert.equal(bad.status, 405)
+  })
 
   return results
 }

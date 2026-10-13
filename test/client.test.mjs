@@ -446,7 +446,12 @@ const SESSION_UNGROUPED = {
  *   /unhide    命中的条目 hidden:false（回收站 -> 待导入）。
  *   /regroup   命中的条目 grouped:true。
  */
-function fakeFetch({ sessions, importResult, syncResult, restoreResult, presets } = {}) {
+function fakeFetch({ sessions, importResult, syncResult, restoreResult, presets, update, updateResult } = {}) {
+  // `update === null` 表示连不上上游（路由回 ok:false）；`updateResult` 是一次
+  // 安装的回报。
+  const updateAnswer = update === null
+    ? null
+    : (update ?? { available: false, installed: { commit: 'bbb2222', date: '2026-10-10', dirty: false }, latest: { commit: 'bbb2222', date: '2026-10-10' }, behind: 0 })
   // `presets` 为 null 表示这个部署没有 agent-preset registry：页面要据此
   // 换成自由输入，而不是摆一个填不出来的下拉。
   const roster = presets === null
@@ -541,6 +546,18 @@ function fakeFetch({ sessions, importResult, syncResult, restoreResult, presets 
         changed: (body?.ids ?? []).map(id => ({ id, from: 'standard', to: body?.preset, changed: true })),
         skipped: [], failed: [],
       })
+    }
+    if (url.endsWith('/update')) {
+      if (method === 'POST') {
+        return respond(updateResult ?? {
+          ok: true, from: 'aaa1111', to: 'bbb2222',
+          published: { state: 'copied', copied: ['src/index.js', 'src/client.js'], failed: [] },
+          restartRequired: true,
+        })
+      }
+      return updateAnswer === null
+        ? respond({ ok: false, error: 'could not resolve host' })
+        : respond({ ok: true, ...updateAnswer })
     }
     return { ok: false, status: 404, json: async () => ({ ok: false, error: 'not found' }) }
   }
@@ -1473,6 +1490,108 @@ export async function run() {
       await click(view, button(view, '改预设'))
       const sent = fake.calls.find(call => call.url.endsWith('/preset'))
       if (sent?.body?.preset !== 'mine') throw new Error(`应发送手填的预设: ${sent?.body?.preset}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  // --- agent 预设之后：检查更新 / 一键更新 -----------------------------------
+
+  await checkAsync('更新控件在配置按钮左边，一开始只说「检查更新」', async () => {
+    const fake = fakeFetch()
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      // 前序遍历：条上的按钮就是这个顺序，索引能定住「谁在谁左边」。
+      const labels = hosts(view, n => n.type === 'button').map(n => text(n).trim())
+      const updateAt = labels.findIndex(label => label.includes('检查更新'))
+      const configAt = labels.findIndex(label => label === '配置')
+      if (updateAt < 0) throw new Error(`缺少「检查更新」：${labels.join(' | ')}`)
+      if (configAt < 0) throw new Error(`缺少「配置」：${labels.join(' | ')}`)
+      if (updateAt > configAt) throw new Error(`更新应当在配置左边：${labels.join(' | ')}`)
+      // 开页不查：标签条不是花掉一次往返的地方。
+      if (fake.calls.some(call => call.url.endsWith('/update'))) {
+        throw new Error('没点就不该去查更新')
+      }
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('检查完通报：已是最新时按钮换字，气泡里给出版本号', async () => {
+    const fake = fakeFetch()
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, hosts(view, n => n.props?.['data-action'] === 'update')[0])
+      if (button(view, '已是最新') === undefined) throw new Error('应当说「已是最新」')
+      if (fake.calls.filter(call => call.url.endsWith('/update')).length !== 1) {
+        throw new Error('检查只应发一次请求')
+      }
+      const bubble = await hoverTip(view, view.tree(), '更新')
+      const said = text(bubble)
+      if (!/bbb2222/.test(said)) throw new Error(`气泡里应当有版本号：${said}`)
+      if (!/最新/.test(said)) throw new Error(`应当说清是不是最新：${said}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('有更新时按钮变成「有更新」，点下去才走 POST', async () => {
+    const fake = fakeFetch({
+      update: {
+        available: true,
+        installed: { commit: 'aaa1111', date: '2026-10-01', dirty: false },
+        latest: { commit: 'bbb2222', date: '2026-10-10' },
+        behind: 3,
+      },
+    })
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, hosts(view, n => n.props?.['data-action'] === 'update')[0])
+      const go = button(view, '有更新')
+      if (go === undefined) throw new Error('检查完应当是「有更新」')
+      await click(view, go)
+      const sent = fake.calls.filter(call => call.url.endsWith('/update'))
+      if (sent.length !== 2) throw new Error(`第二次请求才是安装：${sent.length}`)
+      if (sent[1].method !== 'POST') throw new Error(`安装是 POST：${sent[1].method}`)
+      if (button(view, '已更新') === undefined) throw new Error('装完应当说「已更新」')
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('更新完的气泡说清三件事：装到哪一版、同步了几份、要重启', async () => {
+    const fake = fakeFetch({
+      update: {
+        available: true,
+        installed: { commit: 'aaa1111', date: '2026-10-01', dirty: false },
+        latest: { commit: 'bbb2222', date: '2026-10-10' },
+        behind: 3,
+      },
+    })
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, hosts(view, n => n.props?.['data-action'] === 'update')[0])
+      await click(view, button(view, '有更新'))
+      const bubble = await hoverTip(view, view.tree(), '更新')
+      const said = text(bubble)
+      if (!/bbb2222/.test(said)) throw new Error(`应当说装到了哪一版：${said}`)
+      if (!/2 个文件/.test(said)) throw new Error(`应当说同步了几份：${said}`)
+      if (!/重启|再启动/.test(said)) throw new Error(`不说重启等于让人以为已经生效：${said}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('检查失败不说谎：按钮变成「更新失败」，气泡里带着原因', async () => {
+    const fake = fakeFetch({ update: null })
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, hosts(view, n => n.props?.['data-action'] === 'update')[0])
+      if (button(view, '更新失败') === undefined) throw new Error('应当说「更新失败」')
+      const bubble = await hoverTip(view, view.tree(), '更新')
+      if (!/could not resolve host/.test(text(bubble))) {
+        throw new Error(`气泡里应当有失败原因：${text(bubble)}`)
+      }
     } finally { globalThis.fetch = realFetch }
   })
 
