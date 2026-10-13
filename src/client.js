@@ -1365,6 +1365,11 @@ window.__ModuleLoader__.load({
         points.push(__('settings.updateTipPublished', { commit: report?.to ?? '—', n: copied }))
         if (published?.state === 'self') points.push(__('settings.updateTipSelf'))
         if (published?.state === 'linked') points.push(__('settings.updateTipLinked'))
+        // 硬链接副本：两边本来就是同一个文件，写它就是写自己（会把文件清空），
+        // 所以这里只确认「已经是同一批文件」。
+        if (copied === 0 && Array.isArray(published?.shared) && published.shared.length > 0) {
+          points.push(__('settings.updateTipLinked'))
+        }
         if (published?.state === 'absent') points.push(__('settings.updateTipAbsent'))
         if (Array.isArray(published?.failed) && published.failed.length > 0) {
           points.push(__('settings.updateTipPartial', { n: published.failed.length }))
