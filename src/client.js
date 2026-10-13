@@ -66,6 +66,9 @@ window.__ModuleLoader__.load({
       'settings.updateApplying': '更新中…',
       'settings.updateDone': '已更新',
       'settings.updateFailed': '更新失败',
+      // 检查失败和装失败是两件事：前者什么都没动过，说「更新失败」会让人以为
+      // 插件已经被写坏了。
+      'settings.updateCheckFailed': '检查失败',
       'settings.updateTipCurrent': '当前版本：{commit}（{date}）',
       'settings.updateTipLatest': '最新版本：{commit}（{date}）',
       'settings.updateTipBehind': '落后 {n} 个提交',
@@ -79,6 +82,12 @@ window.__ModuleLoader__.load({
       'settings.updateTipPartial': '有 {n} 个文件没能写进去（通常是被占用），重启后再更新一次即可。',
       'settings.updateTipRestart': '必须完全退出 DSH 再启动才生效，只刷新页面不够。',
       'settings.updateTipFailed': '更新失败：{error}',
+      'settings.updateTipCheckFailed': '检查失败：{error}',
+      // 失败时把「在哪儿、为什么」一起说出来。只说失败等于让人再去猜一遍。
+      'settings.updateTipWhere': '目录：{path}',
+      'settings.updateHintNoGit': '没找到 git（或 git 不在 PATH 里）。更新要用 git，装好后重试。',
+      'settings.updateHintOffline': '连不上 GitHub：网络、代理或 DNS 的问题。',
+      'settings.updateHintLocked': '没有写权限（文件可能被占用）。完全退出 DSH 再试一次。',
       // The dialog's own explanation, behind the "?" under its title. It used to
       // be the description paragraph; nothing here is read without asking.
       'settings.configAbout': '这里的改动立即生效，关掉即生效完毕。',
@@ -217,6 +226,7 @@ window.__ModuleLoader__.load({
       'settings.updateApplying': 'Updating…',
       'settings.updateDone': 'Updated',
       'settings.updateFailed': 'Update failed',
+      'settings.updateCheckFailed': 'Check failed',
       'settings.updateTipCurrent': 'Installed: {commit} ({date})',
       'settings.updateTipLatest': 'Latest: {commit} ({date})',
       'settings.updateTipBehind': 'Behind by {n} commit(s)',
@@ -230,6 +240,11 @@ window.__ModuleLoader__.load({
       'settings.updateTipPartial': '{n} file(s) could not be written (usually locked). Restart DSH and update again.',
       'settings.updateTipRestart': 'Fully quit DSH and start it again for this to take effect — reloading the page is not enough.',
       'settings.updateTipFailed': 'Update failed: {error}',
+      'settings.updateTipCheckFailed': 'Check failed: {error}',
+      'settings.updateTipWhere': 'Directory: {path}',
+      'settings.updateHintNoGit': 'git was not found (or is not on PATH). Updating needs git — install it and try again.',
+      'settings.updateHintOffline': 'Could not reach GitHub: network, proxy or DNS.',
+      'settings.updateHintLocked': 'Permission denied (the files may be locked). Fully quit DSH and try again.',
       'settings.configAbout': 'Every change here applies immediately — just close this when you are done.',
       'settings.preset': 'Agent preset',
       'settings.presetHint': 'Which agent preset imported sessions run under. Defaults to Standard.',
@@ -387,7 +402,13 @@ window.__ModuleLoader__.load({
       let payload = {}
       try { payload = await response.json() } catch { /* keep {} */ }
       if (!response.ok || payload.ok !== true) {
-        throw new Error(payload.error || `${path} failed (HTTP ${response.status})`)
+        const error = new Error(payload.error || `${path} failed (HTTP ${response.status})`)
+        // The body rides along on the error. A failed *check* still carries
+        // what the host knew before it broke — which commit is installed, which
+        // directory it was looking at — and that is the whole difference
+        // between "failed" and a failure the reader can act on.
+        error.payload = payload
+        throw error
       }
       return payload
     }
@@ -426,6 +447,9 @@ window.__ModuleLoader__.load({
         installed: payload.installed ?? null,
         latest: payload.latest ?? null,
         behind: typeof payload.behind === 'number' ? payload.behind : null,
+        // Which directory the host would pull into. Only shown when something
+        // goes wrong, which is the one moment it is worth a line.
+        root: typeof payload.root === 'string' ? payload.root : '',
       }
     }
 
@@ -436,6 +460,7 @@ window.__ModuleLoader__.load({
         from: payload.from ?? null,
         to: payload.to ?? null,
         published: payload.published ?? null,
+        root: typeof payload.root === 'string' ? payload.root : '',
       }
     }
 
@@ -993,6 +1018,10 @@ window.__ModuleLoader__.load({
       if (points.length === 0) return null
       const down = props.placement === 'down'
       const described = props.label ? `${__('settings.tip')}：${props.label}` : __('settings.tip')
+      // `align: 'right'` is for anchors at the right end of a row, where a
+      // bubble growing rightward would leave the page instead of the column.
+      const boxStyle = down ? tipBoxDownStyle : tipBoxStyle
+      const bubbleStyle = props.align === 'right' ? { ...boxStyle, left: 'auto', right: 0 } : boxStyle
       return React.createElement('span', {
         style: tipAnchorStyle,
         onMouseEnter: () => setOpen(true),
@@ -1018,7 +1047,7 @@ window.__ModuleLoader__.load({
           ? React.createElement('span', {
               key: 'tip',
               role: 'tooltip',
-              style: down ? tipBoxDownStyle : tipBoxStyle,
+              style: bubbleStyle,
               // Selecting text in the bubble must not reach the <label> around
               // the row, or a copy would flip the switch it explains.
               onClick: (event) => { event.preventDefault(); event.stopPropagation() },
@@ -1329,15 +1358,83 @@ window.__ModuleLoader__.load({
      * answers before, and the strip gets its line back.
      */
     /**
+     * The update control's state, outside the component.
+     *
+     * Crossing to another plugin's page unmounts this one and mounts it again
+     * on the way back, which would reset a check that is still running back to
+     * "检查更新" and throw away the answer it had already paid for. The button
+     * is only the view; the cell outlives it.
+     *
+     * `stage` remembers which verb failed, because "the check failed" and "the
+     * install failed" are not the same sentence — the first one changed nothing.
+     */
+    const updateState = {
+      phase: 'idle', report: null, failure: '', root: '', stage: '', listeners: new Set(),
+    }
+
+    function updateSubscribe(listener) {
+      updateState.listeners.add(listener)
+      return () => { updateState.listeners.delete(listener) }
+    }
+
+    function setUpdateState(patch) {
+      let changed = false
+      for (const [key, value] of Object.entries(patch)) {
+        if (updateState[key] === value) continue
+        updateState[key] = value
+        changed = true
+      }
+      if (!changed) return
+      for (const listener of [...updateState.listeners]) {
+        try { listener() } catch { /* a broken subscriber never blocks the rest */ }
+      }
+    }
+
+    /**
+     * The one-line guess at why an update broke.
+     *
+     * The host's error is git's own, which is precise and unreadable at the
+     * same time ("spawn git ENOENT"). A guess that is wrong costs one extra
+     * line under the real message; the pair together is what makes the failure
+     * something the reader can act on instead of report.
+     */
+    function updateHint(__, failure) {
+      const text = String(failure || '')
+      if (/ENOENT|spawn git|command not found|is not recognized/i.test(text)) {
+        return __('settings.updateHintNoGit')
+      }
+      if (/could not resolve|failed to connect|timed out|ECONNREFUSED|EAI_AGAIN|network is unreachable|403|407/i.test(text)) {
+        return __('settings.updateHintOffline')
+      }
+      if (/EACCES|EPERM|permission denied/i.test(text)) return __('settings.updateHintLocked')
+      return ''
+    }
+
+    /**
      * What the update chip's bubble says, given what we last learned.
      *
      * Kept out of the component so it reads as a table rather than as branches
      * wedged between button props: every line is a fact the reader was owed at
      * the moment they hovered, and none of them belongs on the strip itself.
      */
-    function updateTipPoints(__, phase, report, failure) {
+    function updateTipPoints(__, phase, report, failure, stage, root) {
       if (phase === 'failed') {
-        return [__('settings.updateTipFailed', { error: failure || 'unknown error' })]
+        const points = []
+        // Keep saying what is installed: a failure is read *while deciding what
+        // to do about it*, and "检查失败" alone answers none of that.
+        if (report?.installed) {
+          points.push(__('settings.updateTipCurrent', {
+            commit: report.installed.commit ?? '—',
+            date: report.installed.date ?? '—',
+          }))
+        }
+        points.push(stage === 'apply'
+          ? __('settings.updateTipFailed', { error: failure || 'unknown error' })
+          : __('settings.updateTipCheckFailed', { error: failure || 'unknown error' }))
+        if (root) points.push(__('settings.updateTipWhere', { path: root }))
+        const hint = updateHint(__, failure)
+        if (hint) points.push(hint)
+        return points
       }
       const points = []
       if (report?.installed !== undefined && report?.installed !== null) {
@@ -1393,35 +1490,62 @@ window.__ModuleLoader__.load({
      */
     function UpdateButton(props) {
       const __ = props.__ || t
-      const [phase, setPhase] = useState('idle')
-      const [report, setReport] = useState(null)
-      const [failure, setFailure] = useState('')
+      // Re-render when the cell changes; the values themselves are read off it
+      // rather than held here, so a page that unmounts mid-check comes back to
+      // the state the check left, not to a fresh one.
+      const [, forceRender] = useState(0)
+      useEffect(() => updateSubscribe(() => forceRender(n => n + 1)), [])
+      const { phase, report, failure, root, stage } = updateState
 
       const busy = phase === 'checking' || phase === 'applying'
 
       const onCheck = async () => {
-        setPhase('checking')
-        setFailure('')
+        if (busy) return
+        setUpdateState({ phase: 'checking', stage: 'check', failure: '' })
         try {
           const answer = await fetchUpdate()
-          setReport(answer)
-          setPhase(answer.available === true ? 'available' : 'clean')
+          setUpdateState({
+            phase: answer.available === true ? 'available' : 'clean',
+            report: answer,
+            failure: '',
+            root: answer.root ?? '',
+          })
         } catch (error) {
-          setFailure(error?.message ?? String(error))
-          setPhase('failed')
+          const payload = error?.payload ?? null
+          setUpdateState({
+            phase: 'failed',
+            failure: error?.message ?? String(error),
+            // A failed check still knows what is installed whenever the host
+            // could read it before the fetch broke.
+            report: payload?.installed
+              ? { installed: payload.installed, latest: null, behind: null }
+              : updateState.report,
+            root: payload?.root ?? updateState.root,
+          })
         }
       }
 
       const onApply = async () => {
-        setPhase('applying')
-        setFailure('')
+        if (busy) return
+        setUpdateState({ phase: 'applying', stage: 'apply', failure: '' })
         try {
           const done = await applyUpdate()
-          setReport({ installed: { commit: done.from ?? '—' }, latest: { commit: done.to ?? '—' }, ...done })
-          setPhase('updated')
+          setUpdateState({
+            phase: 'updated',
+            report: { installed: { commit: done.from ?? '—' }, latest: { commit: done.to ?? '—' }, ...done },
+            failure: '',
+            root: done.root ?? updateState.root,
+          })
         } catch (error) {
-          setFailure(error?.message ?? String(error))
-          setPhase('failed')
+          const payload = error?.payload ?? null
+          setUpdateState({
+            phase: 'failed',
+            failure: error?.message ?? String(error),
+            report: payload?.installed
+              ? { installed: payload.installed, latest: null, behind: null }
+              : updateState.report,
+            root: payload?.root ?? updateState.root,
+          })
         }
       }
 
@@ -1430,12 +1554,20 @@ window.__ModuleLoader__.load({
         : phase === 'available' ? __('settings.updateAvailable')
         : phase === 'clean' ? __('settings.updateClean')
         : phase === 'updated' ? __('settings.updateDone')
-        : phase === 'failed' ? __('settings.updateFailed')
+        : phase === 'failed' ? (stage === 'apply'
+          ? __('settings.updateFailed')
+          : __('settings.updateCheckFailed'))
         : __('settings.updateCheck')
 
       return React.createElement('span', {
         key: 'update',
-        style: { display: 'inline-flex', alignItems: 'center', gap: 4, flex: 'none' },
+        // `position: relative` is what the bubble hangs from. Without a
+        // positioned ancestor the bubble's `top: 100%` resolves against
+        // whatever box happens to be positioned further up (or the document),
+        // which put it a screenful below the strip — a "?" that opened nothing.
+        style: {
+          display: 'inline-flex', alignItems: 'center', gap: 4, flex: 'none', position: 'relative',
+        },
       }, [
         React.createElement('button', {
           key: 'go',
@@ -1443,6 +1575,10 @@ window.__ModuleLoader__.load({
           'data-action': 'update',
           style: busy ? { ...ghostBtnStyle, opacity: 0.5, cursor: 'default' } : ghostBtnStyle,
           disabled: busy,
+          // The platform's own tooltip, for when the bubble is not the answer:
+          // a failure is the one state where the reason has to be reachable
+          // without aiming at a 14px chip.
+          title: phase === 'failed' && failure ? failure : undefined,
           onClick: () => {
             if (busy) return
             // Checking again after an update is how you learn whether anything
@@ -1456,8 +1592,11 @@ window.__ModuleLoader__.load({
           key: 'tip',
           t: __,
           placement: 'down',
+          // The control sits at the strip's right end, so the bubble has to
+          // grow leftward — anchored at its left edge it would run off the page.
+          align: 'right',
           label: __('settings.update'),
-          items: updateTipPoints(__, phase, report, failure),
+          items: updateTipPoints(__, phase, report, failure, stage, root),
         }),
       ])
     }

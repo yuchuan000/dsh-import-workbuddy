@@ -1353,9 +1353,13 @@ function registerRoutes(host, ctx) {
         const result = request.method === 'GET'
           ? await checkSelfUpdate()
           : await applySelfUpdate()
-        sendJson(response, 200, { ok: true, ...result })
+        // `root` rides along on every answer: the one question a failure raises
+        // first is "which copy did it try to update", and only the host knows.
+        sendJson(response, 200, { ok: true, ...result, root: selfRoot() })
       } catch (error) {
-        sendJson(response, 500, { ok: false, error: error?.message ?? String(error) })
+        sendJson(response, 500, {
+          ok: false, error: error?.message ?? String(error), root: selfRoot(),
+        })
       }
     },
   }))

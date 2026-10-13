@@ -1580,18 +1580,77 @@ export async function run() {
     } finally { globalThis.fetch = realFetch }
   })
 
-  await checkAsync('检查失败不说谎：按钮变成「更新失败」，气泡里带着原因', async () => {
+  await checkAsync('检查失败不说谎：按钮变成「检查失败」，气泡里带着原因', async () => {
     const fake = fakeFetch({ update: null })
     globalThis.fetch = fake.impl
     try {
       const { view } = mountPage(loadBundle())
       await view.settle()
       await click(view, hosts(view, n => n.props?.['data-action'] === 'update')[0])
-      if (button(view, '更新失败') === undefined) throw new Error('应当说「更新失败」')
+      if (button(view, '检查失败') === undefined) throw new Error('应当说「检查失败」')
       const bubble = await hoverTip(view, view.tree(), '更新')
-      if (!/could not resolve host/.test(text(bubble))) {
-        throw new Error(`气泡里应当有失败原因：${text(bubble)}`)
+      const said = text(bubble)
+      if (!/could not resolve host/.test(said)) {
+        throw new Error(`气泡里应当有失败原因：${said}`)
       }
+      // 只说「失败」等于让人再猜一遍：连不上、没 git、没权限，总有一条是答案。
+      if (!/GitHub|git|权限|DNS/.test(said)) throw new Error(`气泡里应当有可读的原因：${said}`)
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('气泡挂在控件自己身上：不会因为没有定位祖先而飞到屏幕外', async () => {
+    const fake = fakeFetch()
+    globalThis.fetch = fake.impl
+    try {
+      const { view } = mountPage(loadBundle())
+      await view.settle()
+      await click(view, hosts(view, n => n.props?.['data-action'] === 'update')[0])
+      const go = hosts(view, n => n.props?.['data-action'] === 'update')[0]
+      const wrapper = all(view).find(n => n.kind === 'host' && n.children?.includes(go))
+      // `top: 100%` 需要一个定位过的祖先，否则它拿整页（甚至文档）当参照，
+      // 气泡被放到一屏之外——表现就是鼠标放上去什么也不显示。
+      if (wrapper?.props?.style?.position !== 'relative') {
+        throw new Error('更新控件必须是气泡的定位祖先')
+      }
+      const bubble = await hoverTip(view, view.tree(), '更新')
+      if (bubble === undefined) throw new Error('悬停后应当有气泡')
+      if (bubble.props.style.top !== '100%') throw new Error('气泡应当向下开')
+      // 控件在标签条最右端，气泡只能往左长，否则会溢出页面被裁掉。
+      if (bubble.props.style.right !== 0 || bubble.props.style.left !== 'auto') {
+        throw new Error('气泡应当靠右对齐')
+      }
+    } finally { globalThis.fetch = realFetch }
+  })
+
+  await checkAsync('翻到别的插件页面再回来：检查的状态和答案都还在', async () => {
+    const fake = fakeFetch({
+      update: {
+        available: true,
+        installed: { commit: 'aaa1111', date: '2026-10-01', dirty: false },
+        latest: { commit: 'bbb2222', date: '2026-10-10' },
+        behind: 3,
+      },
+    })
+    globalThis.fetch = fake.impl
+    try {
+      // 同一次 factory 调用：插件在 DSH 里只加载一次，切页面卸载重挂的是组件。
+      const applied = runApply(loadBundle())
+      const panel = applied.pick('settings.section')[0].component
+      const reopen = () => mount(() => createElement('div', {}, createElement(panel, {})))
+      const first = reopen()
+      await first.settle()
+      await click(first, hosts(first, n => n.props?.['data-action'] === 'update')[0])
+      if (button(first, '有更新') === undefined) throw new Error('检查完应当是「有更新」')
+
+      // 切到别的插件页面再回来：外壳把整个面板卸载重挂，组件自己的 state 全丢。
+      // 更新状态存在模块里，所以回来时答案还在，也不会白查一次。
+      const again = reopen()
+      await again.settle()
+      if (button(again, '有更新') === undefined) {
+        throw new Error(`回来之后应当还是「有更新」：${hosts(again, n => n.type === 'button').map(n => text(n).trim()).join(' | ')}`)
+      }
+      const sent = fake.calls.filter(call => call.url.endsWith('/update'))
+      if (sent.length !== 1) throw new Error(`回来不该重新查一遍：${sent.length}`)
     } finally { globalThis.fetch = realFetch }
   })
 
