@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 import { adoptArchiveRoot, listAdopted, restoreAdopted } from '../lib/adopt.mjs'
-import { collectCandidates, importCandidates, normalizeMode } from '../lib/import-core.mjs'
+import { collectCandidates, importCandidates, normalizeCwd, normalizeMode } from '../lib/import-core.mjs'
 import { deriveImportTitle } from '../lib/convert.mjs'
 import { findExistingSession, rewriteSessionHeader, normalizePresetId, DEFAULT_AGENT_PRESET, CURRENT_ARTIFACT_FILENAME } from '../lib/dsh-writer.mjs'
 import { readDshSession } from '../lib/dsh-reader.mjs'
@@ -254,7 +254,7 @@ function archiveFacts(entry) {
   try {
     const parsed = parseWorkBuddySession(entry.archived)
     facts.messageCount = Array.isArray(parsed.messages) ? parsed.messages.length : 0
-    if (parsed.header?.cwd !== undefined) facts.cwd = parsed.header.cwd
+    if (parsed.header?.cwd !== undefined) facts.cwd = normalizeCwd(parsed.header.cwd)
     const derived = deriveImportTitle(workbuddyTitle(parsed.messages), parsed.messages, undefined)
     if (typeof derived === 'string' && derived.length > 0) facts.title = derived
   } catch { /* an unreadable archive still restores; the row just says less */ }

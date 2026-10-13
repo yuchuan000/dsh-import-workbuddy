@@ -270,7 +270,8 @@ export async function run() {
     const { payload } = await call(route(SESSIONS_PATH))
     const s1 = payload.sessions.find(s => s.id === 'wb-sess-1')
     check('候选带 cwd / messageCount / alreadyImported=false', () => {
-      assert.equal(s1?.cwd, 'd:/work/proj-a')
+      // 源里写的是小写盘符 + 正斜杠，报出来必须是 DSH 的形式
+      assert.equal(s1?.cwd, 'D:\\work\\proj-a')
       assert.equal(s1?.messageCount, 2)
       assert.equal(s1?.alreadyImported, false)
     })
@@ -660,7 +661,9 @@ export async function run() {
     const sb = makeSandbox()
     sb.seed('proj-a', [{ id: 'sess-1', cwd: 'd:/work/proj-a', userText: 'first', assistantText: 'r' }])
     sb.seed('proj-b', [{ id: 'sess-2', cwd: 'd:/work/proj-b', userText: 'second', assistantText: 'r' }])
-    const registry = makeRegistry({ existing: [{ id: 'ws-b', path: 'd:/work/proj-b' }] })
+    // 已注册的工作区用 DSH 自己的形式（大写盘符 + 反斜杠），和 workspace.json
+    // 里看到的一致 —— 会话 cwd 必须先规范化才认得出这是同一个工作区。
+    const registry = makeRegistry({ existing: [{ id: 'ws-b', path: 'D:\\work\\proj-b' }] })
     const { route } = makeHarness({ workspaceRegistry: registry })
 
     await checkAsync('导入后按 cwd 建分组并挂上会话', async () => {
@@ -670,9 +673,9 @@ export async function run() {
       assert.equal(status, 200)
       assert.deepEqual(payload.grouped.map(g => g.id).sort(), ['wb-sess-1', 'wb-sess-2'])
       // 已存在的分组复用，没有的不建；挂载要真的落到 sessionIds 上。
-      assert.deepEqual(registry.created, ['d:/work/proj-a'])
-      const a = registry.list().find(w => w.path === 'd:/work/proj-a')
-      const b = registry.list().find(w => w.path === 'd:/work/proj-b')
+      assert.deepEqual(registry.created, ['D:\\work\\proj-a'])
+      const a = registry.list().find(w => w.path === 'D:\\work\\proj-a')
+      const b = registry.list().find(w => w.path === 'D:\\work\\proj-b')
       assert.deepEqual(a.sessionIds, ['wb-sess-1'])
       assert.deepEqual(b.sessionIds, ['wb-sess-2'])
       assert.equal(payload.grouped.find(g => g.id === 'wb-sess-2').workspaceTitle, 'proj-b')
@@ -718,7 +721,7 @@ export async function run() {
       })
       assert.equal(status, 200)
       assert.deepEqual(payload.grouped.map(g => g.id).sort(), ['wb-sess-1', 'wb-sess-2'])
-      const a = registry.list().find(w => w.path === 'd:/work/proj-a')
+      const a = registry.list().find(w => w.path === 'D:\\work\\proj-a')
       assert.deepEqual(a.sessionIds, ['wb-sess-1'])
     })
 
@@ -747,7 +750,10 @@ export async function run() {
       const byId = new Map(payload.sessions.map(s => [s.id, s]))
       assert.equal(byId.get('wb-sess-1').hidden, true)
       assert.equal(byId.get('wb-sess-1').title.length > 0, true, '清单要记住标题')
-      assert.equal(byId.get('wb-sess-1').cwd, 'd:/work/proj-a')
+      // cwd 是规范化过的：源里写的是 `d:/work/proj-a`（小写盘符、正斜杠），
+      // 报出来必须和 DSH 注册工作区用的形式一致，否则会话在自己的工作区里
+      // 认不出家。
+      assert.equal(byId.get('wb-sess-1').cwd, 'D:\\work\\proj-a')
       assert.equal(byId.get('wb-sess-2').hidden, false)
     })
 
@@ -780,7 +786,7 @@ export async function run() {
       assert.ok(row, '清单兜底的那一行仍应出现在列表里')
       assert.equal(row.hidden, true)
       assert.equal(row.title, 'second', `应保留划掉时的标题：${row.title}`)
-      assert.equal(row.cwd, 'd:/work/proj-a')
+      assert.equal(row.cwd, 'D:\\work\\proj-a')
       assert.equal(row.projectDir, 'proj-a')
     })
 

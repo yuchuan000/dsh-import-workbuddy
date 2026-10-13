@@ -23,7 +23,7 @@ import { DatabaseSync } from 'node:sqlite'
 const here = fileURLToPath(new URL('.', import.meta.url))
 const load = (rel) => import(pathToFileURL(join(here, '..', 'lib', rel)).href)
 
-const { normalizeMode, MODES, collectCandidates, importCandidates, buildEventsFor, lastCompactionIndex } = await load('import-core.mjs')
+const { normalizeMode, MODES, collectCandidates, importCandidates, buildEventsFor, lastCompactionIndex, normalizeCwd } = await load('import-core.mjs')
 const { workbuddyDbPath, dbSessionId, readWorkbuddyState, isDeletedInWorkBuddy } = await load('workbuddy-state.mjs')
 const { adoptArchiveRoot, adoptSession, restoreAdopted, listAdopted } = await load('adopt.mjs')
 const { zstdFrames, decodeZstdFrames, readDshSession, findSessionArtifact } = await load('dsh-reader.mjs')
@@ -647,6 +647,35 @@ export async function run() {
         assert.ok(head)
         // 标题落在会话头里；这里只钉「推导没抛也没变空」这一层。
         assert.ok(text(events).length > 0)
+      })
+    } finally {
+      sb.restore()
+    }
+  }
+
+  // --- import-core: cwd 规范化 ----------------------------------------------
+  //
+  // WorkBuddy 记的 cwd 是当时那个进程看到的字符串，盘符可能是小写；DSH 注册
+  // 工作区时用的是真实路径（大写）。文件系统等价、字符串不等价，于是会话在
+  // 自己的工作区里认不出家 —— agent 起不来，发消息石沉大海，连一个事件都不
+  // 会落盘。这条钉的是「导入时必须把 cwd 收拾成 DSH 的样子」。
+  {
+    const sb = makeSandbox()
+    try {
+      sb.seed('proj', [{ id: 'sess-cwd', cwd: 'd:\\Work\\proj', rounds: 1 }])
+      const [candidate] = collectCandidates(sb.wbRoot)
+      check('小写盘符的 cwd 导入时改成大写（与 DSH 注册的工作区一致）', () => {
+        assert.equal(candidate.cwd, 'D:\\Work\\proj')
+      })
+      check('分隔符统一成反斜杠、去掉尾巴上的斜杠', () => {
+        assert.equal(normalizeCwd('D:/Work/proj/'), 'D:\\Work\\proj')
+      })
+      check('POSIX 路径不被当成盘符处理', () => {
+        assert.equal(normalizeCwd('/home/me/proj/'), '/home/me/proj')
+      })
+      check('空值和非字符串原样放过（不凭空造 cwd）', () => {
+        assert.equal(normalizeCwd(''), '')
+        assert.equal(normalizeCwd(undefined), undefined)
       })
     } finally {
       sb.restore()
